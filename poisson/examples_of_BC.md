@@ -1,44 +1,4 @@
-## EXAMPLE USAGE - MED GROUPS
 
-```python
-def example_med_groups():
-    """
-    Example using boundary conditions from MED file groups
-    """
-    from med_reader import load_med_mesh_mc
-    from bc_handler import BoundaryConditionManager, P1DGPoissonSolverWithBC
-    
-    # 1. Load mesh
-    mesh = load_med_mesh_mc("./mesh/mesh.med")
-    
-    # 2. Extract edge groups from MED file
-    edge_groups = extract_edge_groups_from_med("./mesh/mesh.med")
-    
-    # 3. Create boundary condition manager
-    bc_manager = BoundaryConditionManager(mesh, edge_groups)
-    
-    # 4. Define boundary conditions for each group using add_bc_by_group
-    bc_manager.add_bc_by_group("left", "dirichlet", 1.0)
-    bc_manager.add_bc_by_group("right", "dirichlet", 0.0)
-    bc_manager.add_bc_by_group("top", "neumann", 0.5)
-    bc_manager.add_bc_by_group("bottom", "dirichlet", lambda x, y: np.sin(np.pi * x))
-    
-    # 5. Create solver and solve
-    solver = P1DGPoissonSolverWithBC(mesh, bc_manager, penalty_param=10.0)
-    
-    def source_term(x, y):
-        return 2.0 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y)
-    
-    u_dofs = solver.solve(source_term)
-    
-    # Evaluate solution
-    for cell_id in range(min(5, mesh.n_cells)):
-        centroid = mesh.cell_centroid(cell_id)
-        u_val = solver.evaluate_solution(u_dofs, centroid, cell_id)
-        print(f"Cell {cell_id}: u({centroid[0]:.3f}, {centroid[1]:.3f}) = {u_val:.6f}")
-    
-    return u_dofs
-```
 
 ## EXAMPLE USAGE - ANALYTICAL FUNCTIONS
 
@@ -70,51 +30,6 @@ def example_circular_domain():
     
     solver = P1DGPoissonSolverWithBC(mesh, bc_manager, penalty_param=10.0)
     f = lambda x, y: -4.0  # Laplacian of x^2 + y^2
-    u_dofs = solver.solve(f)
-    
-    return u_dofs
-```
-
-## EXAMPLE USAGE - MIXED MODE (MED GROUPS + ANALYTICAL)
-
-```python
-def example_mixed_mode():
-    """
-    Example combining MED groups and analytical boundaries
-    Priority: MED groups are checked first, then analytical functions
-    """
-    from med_reader import load_med_mesh_mc
-    from bc_handler import BoundaryConditionManager, P1DGPoissonSolverWithBC
-    
-    # Load mesh and groups
-    mesh = load_med_mesh_mc("./mesh/mesh.med")
-    edge_groups = extract_edge_groups_from_med("./mesh/mesh.med")
-    
-    bc_manager = BoundaryConditionManager(mesh, edge_groups)
-    
-    # Use MED groups for some boundaries
-    bc_manager.add_bc_by_group("inlet", "dirichlet", lambda x, y: 4*y*(1-y))
-    bc_manager.add_bc_by_group("outlet", "neumann", 0.0)
-    
-    # Use analytical functions for other boundaries
-    # These will only apply to edges NOT in the MED groups
-    bc_manager.add_bc_by_function(
-        region_func=lambda x, y: abs(y) < 1e-10,
-        bc_type="dirichlet",
-        value_func=0.0,
-        name="bottom"
-    )
-    
-    bc_manager.add_bc_by_function(
-        region_func=lambda x, y: abs(y - 1.0) < 1e-10,
-        bc_type="dirichlet",
-        value_func=0.0,
-        name="top"
-    )
-    
-    # Solve
-    solver = P1DGPoissonSolverWithBC(mesh, bc_manager, penalty_param=10.0)
-    f = lambda x, y: 0.0
     u_dofs = solver.solve(f)
     
     return u_dofs

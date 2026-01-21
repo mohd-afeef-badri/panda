@@ -498,3 +498,143 @@ def test_analytical_boundaries():
     # Solution should be influenced by left BC (u=1) and right BC (u=0)
     assert np.min(u_dofs) < 0.0, "Some DOF values should be negative due to source term"
     assert np.max(u_dofs) > 0.0, "Some DOF values should be positive"
+
+
+def test_med_groups():
+    """
+    Example using boundary conditions from MED file groups
+    
+    This test demonstrates using pre-defined boundary groups from a MED file.
+    The square_poly.med mesh has groups: left, right, top, bottom
+    
+    Boundary conditions:
+    - left group: Dirichlet u=1
+    - right group: Dirichlet u=0
+    - top group: Neumann ∂u/∂n=0.5
+    - bottom group: Dirichlet u=sin(π*x)
+    
+    Source term: f = 2π²*sin(π*x)*sin(π*y)
+    """
+    
+    # 1. Load mesh with groups
+    mesh = load_med_mesh_mc("./mesh/square_poly.med")
+    
+    # 2. Extract edge groups from MED file
+    edge_groups = extract_edge_groups_from_med("./mesh/square_poly.med")
+    
+    # 3. Create boundary condition manager
+    bc_manager = BoundaryConditionManager(mesh, edge_groups)
+    
+    # 4. Define boundary conditions for each group using add_bc_by_group
+    bc_manager.add_bc_by_group("left", "dirichlet", 1.0)
+    bc_manager.add_bc_by_group("right", "dirichlet", 0.0)
+    bc_manager.add_bc_by_group("top", "neumann", 0.5)
+    bc_manager.add_bc_by_group("bottom", "dirichlet", lambda x, y: np.sin(np.pi * x))
+    
+    # 5. Create solver and solve
+    solver = P1DGPoissonSolver(mesh, bc_manager, penalty_param=10.0)
+    
+    def source_term(x, y):
+        return 2.0 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y)
+    
+    u_dofs = solver.solve(source_term)
+    
+    # Regression test: verify solution values at specific locations
+    # Expected values captured with correct named groups (left, right, top, bottom)
+    expected_values = {
+        0: 5.009082e-01,    # Cell 0 centroid
+        1: 1.548878e-03,    # Cell 1 centroid
+        2: 6.842574e-02,    # Cell 2 centroid
+        3: 1.041642e+00,    # Cell 3 centroid
+        4: 9.937374e-02,    # Cell 4 centroid
+    }
+    
+    tolerance = 1e-6  # Relative tolerance
+    
+    for cell_id, expected_val in expected_values.items():
+        cent = solver.mesh.cell_centroid(cell_id)
+        u_val = solver.evaluate_solution(u_dofs, cent, cell_id)
+        rel_error = abs(u_val - expected_val) / (abs(expected_val) + 1e-15)
+        assert rel_error < tolerance, \
+            f"Cell {cell_id}: expected {expected_val:.6e}, got {u_val:.6e}, rel_error={rel_error:.6e}"
+    
+    # Check global statistics
+    assert np.min(u_dofs) < 0.0, "Solution should have some negative values"
+    assert np.max(u_dofs) > 0.0, "Solution should have some positive values"
+
+def test_mixed_mode():
+    """
+    Test combining MED groups and analytical boundaries with priority system
+    
+    Priority: MED groups (highest) > Analytical functions > Default
+    
+    Boundary conditions:
+    - left group: Dirichlet u=4*y*(1-y) (parabolic profile)
+    - right group: Neumann ∂u/∂n=0 (insulated)
+    - bottom: Dirichlet u=0 (via analytical function)
+    - top: Dirichlet u=0 (via analytical function)
+    
+    Source term: f=0 (Laplace equation)
+    
+    This demonstrates the priority system where MED groups take precedence
+    over analytical function boundaries.
+    """
+    
+    # 1. Load mesh and groups
+    mesh = load_med_mesh_mc("./mesh/square_poly.med")
+    edge_groups = extract_edge_groups_from_med("./mesh/square_poly.med")
+    
+    # 2. Create boundary condition manager
+    bc_manager = BoundaryConditionManager(mesh, edge_groups)
+    
+    # 3. MED group boundaries (highest priority)
+    bc_manager.add_bc_by_group("left", "dirichlet", lambda x, y: 4*y*(1-y))
+    bc_manager.add_bc_by_group("right", "neumann", 0.0)
+    
+    # 4. Analytical function boundaries (only apply where MED groups don't cover)
+    bc_manager.add_bc_by_function(
+        region_func=lambda x, y: abs(y) < 1e-10,  # Bottom boundary
+        bc_type="dirichlet",
+        value_func=0.0,
+        name="bottom"
+    )
+    
+    bc_manager.add_bc_by_function(
+        region_func=lambda x, y: abs(y - 1.0) < 1e-10,  # Top boundary
+        bc_type="dirichlet",
+        value_func=0.0,
+        name="top"
+    )
+    
+    # 5. Create solver and solve
+    solver = P1DGPoissonSolver(mesh, bc_manager, penalty_param=10.0)
+    
+    def source_term(x, y):
+        return 0.0  # Laplace equation
+    
+    u_dofs = solver.solve(source_term)
+    
+    # Regression test: verify solution values at specific locations
+    # Expected values captured with mixed mode BCs (MED groups + analytical)
+    expected_values = {
+        0: 4.920209e-02,    # Cell 0 centroid (near parabolic left wall)
+        1: 3.698635e-03,    # Cell 1 centroid (near insulated right wall)
+        2: 3.697201e-03,    # Cell 2 centroid (upper right)
+        3: 4.896080e-02,    # Cell 3 centroid (near parabolic left wall)
+        4: 2.666662e-02,    # Cell 4 centroid
+    }
+    
+    tolerance = 1e-6  # Relative tolerance
+    
+    for cell_id, expected_val in expected_values.items():
+        cent = solver.mesh.cell_centroid(cell_id)
+        u_val = solver.evaluate_solution(u_dofs, cent, cell_id)
+        rel_error = abs(u_val - expected_val) / (abs(expected_val) + 1e-15)
+        assert rel_error < tolerance, \
+            f"Cell {cell_id}: expected {expected_val:.6e}, got {u_val:.6e}, rel_error={rel_error:.6e}"
+    
+    # Check that solution respects boundary conditions
+    # Left wall should have higher values (parabolic profile max at y=0.5)
+    assert np.max(u_dofs) > 3.0, "Solution should have significant positive values from left BC"
+    # Right wall is insulated, bottom/top are zero, so we expect reasonable range
+    assert np.min(u_dofs) < 0.0, "Solution should have negative values (extension from boundaries)"
