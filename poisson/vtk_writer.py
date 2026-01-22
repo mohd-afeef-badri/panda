@@ -7,8 +7,6 @@ def export_to_vtk(solver, u_dofs, filename="solution.vtk", field_name="u",
         _export_vtk_p0(solver, u_dofs, filename, field_name, u_exact_func)
     elif method == "P1_vertex":
         _export_vtk_p1_vertex(solver, u_dofs, filename, field_name, u_exact_func)
-    elif method == "subcell":
-        _export_vtk_p0(solver, u_dofs, filename, field_name, u_exact_func)
     else:
         raise ValueError(f"Unknown export method: {method}")
 
