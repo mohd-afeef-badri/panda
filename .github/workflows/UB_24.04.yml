@@ -60,7 +60,8 @@ jobs:
           python3-stemmer \
           python3-sphinxcontrib.websupport \
           sphinx-intl \
-          python3-urllib3
+          python3-urllib3 \
+          libopenblas-dev
 
     - name: download and extract MEDCOUPLING
       run: |
