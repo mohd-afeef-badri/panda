@@ -1,0 +1,48 @@
+name: UB24.04_WITH_MED
+
+on:
+  push:
+    paths-ignore:
+      - '**/README.md'
+      - '**/.gitignore'
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install mpich libtirpc-dev
+    - name: download and extract MEDCOUPLING
+      run: |
+        export MEDCOUPLING_VERSION=9.15.0
+        export MEDCOUPLING_DIR=/home/runner/medcoupling
+        wget -c --header="User-Agent: Mozilla/5.0 (X11; Linux x86_64)" \
+          --header="Referer: https://www.salome-platform.org/" \
+          https://files.salome-platform.org/Salome/Salome${MEDCOUPLING_VERSION}/MEDCOUPLING-${MEDCOUPLING_VERSION}.tar.gz \
+          -O MEDCOUPLING-${MEDCOUPLING_VERSION}.tar.gz
+        tar -xzf MEDCOUPLING-${MEDCOUPLING_VERSION}.tar.gz
+        mv MEDCOUPLING-${MEDCOUPLING_VERSION} $MEDCOUPLING_DIR
+    - name: test panda
+      run: |
+        set +e                      # Don't exit immediately on failure
+        export MEDCOUPLING_DIR=/home/runner/medcoupling
+        source ${MEDCOUPLING_DIR}/env_launch.sh
+        pytest -v
+        status=$?                  # Capture exit code of pytest
+        mkdir -p $GITHUB_WORKSPACE/artifacts
+        find . \( -name "*.log" -o -name "*.txt" \) -exec cp --parents {} "$GITHUB_WORKSPACE/artifacts/" \; || true
+        exit $status               # Re-raise make check's status to mark the step as failed if it should
+    - name: Upload logs
+      if: always()  # upload logs even if test failed
+      uses: actions/upload-artifact@v4
+      with:
+        name: check-logs
+        path: ${{ github.workspace }}/artifacts
