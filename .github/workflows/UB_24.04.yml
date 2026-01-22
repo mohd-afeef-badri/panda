@@ -19,7 +19,49 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install mpich libtirpc-dev
+        sudo apt-get install mpich libtirpc-dev \
+          python3-babel \
+          python3-pytest-cython \
+          python3-jinja2 \
+          python3-pygments \
+          python3-sphinx \
+          python3-alabaster \
+          libboost-all-dev \
+          python3-certifi \
+          python3-chardet \
+          python3-click \
+          cmake \
+          libcppunit-dev \
+          python3-docutils \
+          doxygen \
+          graphviz \
+          libgraphviz-dev \
+          libhdf5-dev \
+          python3-idna \
+          python3-imagesize \
+          liblapack3 \
+          liblapacke \
+          liblapack-dev \
+          liblapacke-dev \
+          libxml2 \
+          libxml2-dev \
+          python3-markupsafe \
+          libmetis5 \
+          libmetis-dev \
+          python3-mpi4py \
+          python3-numpy \
+          python3-packaging \
+          python3-pyparsing \
+          python3-tz \
+          python3-requests \
+          python3-scipy \
+          python3-setuptools \
+          python3-six \
+          python3-stemmer \
+          python3-sphinxcontrib.websupport \
+          sphinx-intl \
+          python3-urllib3
+
     - name: download and extract MEDCOUPLING
       run: |
         export MEDCOUPLING_VERSION=9.15.0
