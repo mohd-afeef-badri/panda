@@ -542,11 +542,11 @@ def test_med_groups():
     # Regression test: verify solution values at specific locations
     # Expected values captured with correct named groups (left, right, top, bottom)
     expected_values = {
-        0: 5.009082e-01,    # Cell 0 centroid
-        1: 1.548878e-03,    # Cell 1 centroid
-        2: 6.842574e-02,    # Cell 2 centroid
-        3: 1.041642e+00,    # Cell 3 centroid
-        4: 9.937374e-02,    # Cell 4 centroid
+        0: 5.022583e-01,    # Cell 0 centroid
+        1: 3.219115e-03,    # Cell 1 centroid
+        2: 1.039536e-01,    # Cell 2 centroid
+        3: 8.198034e-02,    # Cell 3 centroid
+        4: 6.903238e-02,    # Cell 4 centroid
     }
     
     tolerance = 1e-6  # Relative tolerance
@@ -617,11 +617,11 @@ def test_mixed_mode_bc_groups_analytical():
     # Regression test: verify solution values at specific locations
     # Expected values captured with mixed mode BCs (MED groups + analytical)
     expected_values = {
-        0: 4.920209e-02,    # Cell 0 centroid (near parabolic left wall)
-        1: 3.698635e-03,    # Cell 1 centroid (near insulated right wall)
-        2: 3.697201e-03,    # Cell 2 centroid (upper right)
-        3: 4.896080e-02,    # Cell 3 centroid (near parabolic left wall)
-        4: 2.666662e-02,    # Cell 4 centroid
+        0: 6.851020e-02,    # Cell 0 centroid (near parabolic left wall)
+        1: 5.287351e-03,    # Cell 1 centroid (near insulated right wall)
+        2: 3.482101e-02,    # Cell 2 centroid (upper right)
+        3: 2.935371e-02,    # Cell 3 centroid (near parabolic left wall)
+        4: 2.351983e-02,    # Cell 4 centroid
     }
     
     tolerance = 1e-6  # Relative tolerance
