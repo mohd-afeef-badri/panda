@@ -17,7 +17,7 @@ from DG_P1 import *
 if __name__ == "__main__":
 
     # Define the mesh of the domain
-    mesh = polygonal_mesh.create_square_mesh(n=20)
+    mesh = polygonal_mesh.create_square_mesh(n=10)
     # mesh_name = "./mesh/mesh.med"
     # mesh = med_io.load_med_mesh_mc(mesh_name)
 
@@ -26,7 +26,7 @@ if __name__ == "__main__":
         # circular_layer   # sharp_front
         # multiple_peaks   # corner_peak
         # internal_layer   # boundary_layer
-    u_exact, f, g, name = manufactured_solutions.extreme_corner()
+    u_exact, f, g, name = manufactured_solutions.smooth_sin_cos()
 
     # Set up DG Poisson solver with boundary conditions
     # Dirichlet BCs on group "boundary"
@@ -37,69 +37,60 @@ if __name__ == "__main__":
     # Set up DG Poisson solver with boundary conditions
     # Dirichlet BCs on all boundaries no needed to specify groups
     bc_manager = boundary_conditions.BoundaryConditionManager(mesh)
-    bc_manager.add_bc_to_all_boundaries(
-        bc_type="dirichlet",
-        value_func=lambda x, y: g(x, y)
-    )
+    bc_manager.add_bc_to_all_boundaries( bc_type="dirichlet", value_func=lambda x, y: g(x, y) )
 
-    # Solve with different penalty parameters to verify robustness
-    penalties = [2.0, 5.0, 10.0]
+    solver = P1DGPoissonSolver(mesh, bc_manager, penalty_param = 10.0)
+    u_dofs = solver.solve(f)
 
-    fig, axes = plt.subplots(2, len(penalties), figsize=(15, 10))
+    fig, axes = plt.subplots(2, 1, figsize=(5, 10))
 
-    for idx, penalty in enumerate(penalties):
-        solver = P1DGPoissonSolver(mesh, bc_manager, penalty_param=penalty)
-        u_dofs = solver.solve(f)
-
-        # Get cell values
-        cell_values = []
-        for cell_id in range(mesh.n_cells):
-            cent = mesh.cell_centroid(cell_id)
-            u_val = solver.evaluate_solution(u_dofs, cent, cell_id)
-            cell_values.append(u_val)
-        
-        cell_values = np.array(cell_values)
-        
-        # Plot solution
-        ax = axes[0, idx]
-        for cell_id, cell in enumerate(mesh.cells):
-            verts = mesh.vertices[cell]
-            val_norm = (cell_values[cell_id] - cell_values.min()) / (cell_values.max() - cell_values.min() + 1e-10)
-            poly = plt.Polygon(verts, facecolor=plt.cm.viridis(val_norm), 
-                             edgecolor='black', linewidth=0.3)
-            ax.add_patch(poly)
-        
-        all_verts = mesh.vertices
-        ax.set_xlim(all_verts[:, 0].min()-0.05, all_verts[:, 0].max()+0.05)
-        ax.set_ylim(all_verts[:, 1].min()-0.05, all_verts[:, 1].max()+0.05)
-        ax.set_aspect('equal')
-        ax.set_title(f'Solution (γ={penalty})')
-        
-        # Plot error
-        ax = axes[1, idx]
-        errors = []
-        for cell_id in range(mesh.n_cells):
-            cent = mesh.cell_centroid(cell_id)
-            u_num = solver.evaluate_solution(u_dofs, cent, cell_id)
-            u_exact_val = u_exact(cent[0], cent[1])
-            errors.append(abs(u_num - u_exact_val))
-        
-        max_error = max(errors) if max(errors) > 0 else 1.0
-        for cell_id, cell in enumerate(mesh.cells):
-            verts = mesh.vertices[cell]
-            poly = plt.Polygon(verts, facecolor=plt.cm.hot(errors[cell_id]/max_error), 
-                             edgecolor='black', linewidth=0.3)
-            ax.add_patch(poly)
-        
-        ax.set_xlim(all_verts[:, 0].min()-0.05, all_verts[:, 0].max()+0.05)
-        ax.set_ylim(all_verts[:, 1].min()-0.05, all_verts[:, 1].max()+0.05)
-        ax.set_aspect('equal')
-        ax.set_title(f'Error (max={max(errors):.3e})')
-        
-        print(f"\nPenalty γ = {penalty}:")
-        print(f"  Max error: {max(errors):.6e}")
-        print(f"  Mean error: {np.mean(errors):.6e}")
-        print(f"  L2 error: {np.sqrt(np.mean(np.array(errors)**2)):.6e}")
+    # Get cell values
+    cell_values = []
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        u_val = solver.evaluate_solution(u_dofs, cent, cell_id)
+        cell_values.append(u_val)
+    
+    cell_values = np.array(cell_values)
+    
+    # Plot solution
+    ax = axes[0]
+    for cell_id, cell in enumerate(mesh.cells):
+        verts = mesh.vertices[cell]
+        val_norm = (cell_values[cell_id] - cell_values.min()) / (cell_values.max() - cell_values.min() + 1e-10)
+        poly = plt.Polygon(verts, facecolor=plt.cm.viridis(val_norm),  edgecolor='black', linewidth=0.3)
+        ax.add_patch(poly)
+    
+    all_verts = mesh.vertices
+    ax.set_xlim(all_verts[:, 0].min()-0.05, all_verts[:, 0].max()+0.05)
+    ax.set_ylim(all_verts[:, 1].min()-0.05, all_verts[:, 1].max()+0.05)
+    ax.set_aspect('equal')
+    ax.set_title(f'Solution (γ={solver.penalty})')
+    
+    # Plot error
+    ax = axes[1]
+    errors = []
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        u_num = solver.evaluate_solution(u_dofs, cent, cell_id)
+        u_exact_val = u_exact(cent[0], cent[1])
+        errors.append(abs(u_num - u_exact_val))
+    
+    max_error = max(errors) if max(errors) > 0 else 1.0
+    for cell_id, cell in enumerate(mesh.cells):
+        verts = mesh.vertices[cell]
+        poly = plt.Polygon(verts, facecolor=plt.cm.hot(errors[cell_id]/max_error), edgecolor='black', linewidth=0.3)
+        ax.add_patch(poly)
+    
+    ax.set_xlim(all_verts[:, 0].min()-0.05, all_verts[:, 0].max()+0.05)
+    ax.set_ylim(all_verts[:, 1].min()-0.05, all_verts[:, 1].max()+0.05)
+    ax.set_aspect('equal')
+    ax.set_title(f'Error (max={max(errors):.3e})')
+    
+    print(f"\nSIPG Penalty γ = {solver.penalty}:")
+    print(f"  Max error: {max(errors):.6e}")
+    print(f"  Mean error: {np.mean(errors):.6e}")
+    print(f"  L2 error: {np.sqrt(np.mean(np.array(errors)**2)):.6e}")
     
     plt.tight_layout()
     plt.show()
