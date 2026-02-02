@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
-from DG_P1 import *
+from poisson_DG import *
 import manufactured_solutions as manufactured_solutions
 from panda.lib import med_io
 from panda.lib import polygonal_mesh
