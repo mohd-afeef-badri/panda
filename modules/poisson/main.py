@@ -12,7 +12,7 @@ from panda.lib import med_io
 from panda.lib import vtk_writer
 from panda.lib import boundary_conditions
 from panda.lib import polygonal_mesh
-from DG_P1 import *
+from poisson_DG import *
 
 if __name__ == "__main__":
 
