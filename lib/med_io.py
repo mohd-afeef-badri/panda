@@ -246,6 +246,12 @@ def export_to_med(solver, u_dofs, filename="solution.med", field_name="u",
         _export_med_p0(solver, u_dofs, filename, field_name)
     elif method == "P1_vertex":
         _export_med_p1_vertex(solver, u_dofs, filename, field_name)
+    elif method == "P0_P1":
+        _export_med_p0_p1(solver, u_dofs, filename, field_name + "_P0", field_name + "_P1")
+    elif method == "P0_P1_gradients":
+        _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name)
+    elif method == "P0_P1_gradient_mag":
+        _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name)
     else:
         raise ValueError(f"Unknown export method: {method}")
 
@@ -412,6 +418,519 @@ def _export_med_p1_vertex(solver, u_dofs, filename, field_name):
     med_writer.write(filename, 0)  # 0 = append mode
 
     print(f"P1 vertex interpolation exported to MED: {filename}")
+
+def _export_med_p0_p1(solver, u_dofs, filename, field_name_p0, field_name_p1):
+    """
+    Export both P0 (cell-centered) and P1 (vertex-based) projections to the same MED file.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver with the mesh
+    u_dofs : array
+        Solution degrees of freedom
+    filename : str
+        Output MED file name
+    field_name_p0 : str
+        Name for P0 field
+    field_name_p1 : str
+        Name for P1 field
+    """
+    mesh = solver.mesh
+    
+    # Compute P0 values at cell centroids
+    u_cells = np.zeros(mesh.n_cells)
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        u_cells[cell_id] = solver.evaluate_solution(u_dofs, cent, cell_id)
+    
+    # Compute P1 values at vertices using averaging from adjacent cells
+    u_vertices = np.zeros(mesh.n_vertices)
+    vertex_count = np.zeros(mesh.n_vertices)
+
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            vertex_pos = mesh.vertices[vertex_id]
+            u_val = solver.evaluate_solution(u_dofs, vertex_pos, cell_id)
+            u_vertices[vertex_id] += u_val
+            vertex_count[vertex_id] += 1
+
+    # Average values at vertices shared by multiple cells
+    u_vertices /= np.maximum(vertex_count, 1)
+
+    # Create MEDCoupling mesh
+    coords_array = mesh.vertices
+    if coords_array.shape[1] == 2:
+        # Add z=0 coordinate
+        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
+    else:
+        coords_3d = coords_array
+
+    # Create coordinate array
+    coords_mc = mc.DataArrayDouble(coords_3d)
+    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+
+    # Create unstructured mesh
+    umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
+    umesh.setCoords(coords_mc)
+
+    # Group cells by type for MEDCoupling contiguity requirement
+    cells_by_type = {}
+    for cell_id, cell in enumerate(mesh.cells):
+        n_nodes = len(cell)
+        if n_nodes == 3:
+            cell_type = mc.NORM_TRI3
+        elif n_nodes == 4:
+            cell_type = mc.NORM_QUAD4
+        else:
+            cell_type = mc.NORM_POLYGON
+
+        if cell_type not in cells_by_type:
+            cells_by_type[cell_type] = []
+        cells_by_type[cell_type].append((cell_id, cell))
+
+    # Build mapping from new cell order to original cell_id
+    cell_mapping = []
+    umesh.allocateCells(mesh.n_cells)
+
+    # Insert cells grouped by type
+    for cell_type in sorted(cells_by_type.keys()):
+        for cell_id, cell in cells_by_type[cell_type]:
+            umesh.insertNextCell(cell_type, cell)
+            cell_mapping.append(cell_id)
+
+    umesh.finishInsertingCells()
+
+    # Reorder P0 field values according to cell_mapping
+    u_cells_reordered = u_cells[cell_mapping]
+
+    # Create P0 field on cells
+    field_p0 = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+    field_p0.setName(field_name_p0)
+    field_p0.setMesh(umesh)
+    field_p0.setTime(0.0, 0, 0)
+
+    # Set P0 field values
+    field_array_p0 = mc.DataArrayDouble(u_cells_reordered)
+    field_array_p0.setInfoOnComponent(0, field_name_p0)
+    field_p0.setArray(field_array_p0)
+    field_p0.checkConsistencyLight()
+
+    # Create P1 field on nodes
+    field_p1 = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+    field_p1.setName(field_name_p1)
+    field_p1.setMesh(umesh)
+    field_p1.setTime(0.0, 0, 0)
+
+    # Set P1 field values
+    field_array_p1 = mc.DataArrayDouble(u_vertices)
+    field_array_p1.setInfoOnComponent(0, field_name_p1)
+    field_p1.setArray(field_array_p1)
+    field_p1.checkConsistencyLight()
+
+    # Write MED file with mesh
+    med_mesh = mc.MEDFileUMesh()
+    med_mesh.setMeshAtLevel(0, umesh)
+    med_mesh.setName("solution_mesh")
+    med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
+
+    # Write P0 field
+    med_writer_p0 = mc.MEDFileField1TS()
+    med_writer_p0.setFieldNoProfileSBT(field_p0)
+    med_writer_p0.write(filename, 0)  # 0 = append mode
+
+    # Write P1 field
+    med_writer_p1 = mc.MEDFileField1TS()
+    med_writer_p1.setFieldNoProfileSBT(field_p1)
+    med_writer_p1.write(filename, 0)  # 0 = append mode
+
+    print(f"P0 and P1 projections exported to MED: {filename}")
+
+def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, delta=1e-6):
+    """
+    Compute gradients numerically using finite differences.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution degrees of freedom
+    points : array of shape (n, 2)
+        Points at which to evaluate gradients
+    cell_ids : array of shape (n,)
+        Cell IDs for each point
+    delta : float
+        Step size for finite differences
+    
+    Returns:
+    --------
+    gradients : array of shape (n, 2)
+        Gradients [du/dx, du/dy] at each point
+    """
+    n_points = len(points)
+    gradients = np.zeros((n_points, 2))
+    
+    for i, (pt, cell_id) in enumerate(zip(points, cell_ids)):
+        # Compute gradient using central differences
+        x, y = pt
+        
+        # Evaluate at displaced points
+        u_x_plus = solver.evaluate_solution(u_dofs, np.array([x + delta, y]), cell_id)
+        u_x_minus = solver.evaluate_solution(u_dofs, np.array([x - delta, y]), cell_id)
+        u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
+        u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
+        
+        # Compute derivatives
+        du_dx = (u_x_plus - u_x_minus) / (2 * delta)
+        du_dy = (u_y_plus - u_y_minus) / (2 * delta)
+        
+        gradients[i, 0] = du_dx
+        gradients[i, 1] = du_dy
+    
+    return gradients
+
+def _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name):
+    """
+    Export P0 and P1 fields along with their gradients to the same MED file.
+    
+    Creates four fields:
+    - {field_name}_P0: P0 projection (cell-centered)
+    - {field_name}_P1: P1 projection (vertex-based)
+    - gradient_{field_name}_P0: P0 gradients (cell-centered, 2 components)
+    - gradient_{field_name}_P1: P1 gradients (vertex-based, 2 components)
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver with the mesh
+    u_dofs : array
+        Solution degrees of freedom
+    filename : str
+        Output MED file name
+    field_name : str
+        Base name for fields
+    """
+    mesh = solver.mesh
+    
+    # Compute P0 values and gradients at cell centroids
+    u_cells = np.zeros(mesh.n_cells)
+    grad_cells = np.zeros((mesh.n_cells, 2))
+    cell_centroids = np.zeros((mesh.n_cells, 2))
+    
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        cell_centroids[cell_id] = cent
+        u_cells[cell_id] = solver.evaluate_solution(u_dofs, cent, cell_id)
+    
+    grad_cells = _compute_gradients_numerical(solver, u_dofs, cell_centroids, 
+                                               np.arange(mesh.n_cells))
+    
+    # Compute P1 values and gradients at vertices using averaging from adjacent cells
+    u_vertices = np.zeros(mesh.n_vertices)
+    grad_vertices = np.zeros((mesh.n_vertices, 2))
+    vertex_count = np.zeros(mesh.n_vertices)
+
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            vertex_pos = mesh.vertices[vertex_id]
+            u_val = solver.evaluate_solution(u_dofs, vertex_pos, cell_id)
+            u_vertices[vertex_id] += u_val
+            grad_vertices[vertex_id] += grad_cells[cell_id]
+            vertex_count[vertex_id] += 1
+
+    # Average values and gradients at vertices shared by multiple cells
+    u_vertices /= np.maximum(vertex_count, 1)
+    grad_vertices /= np.maximum(vertex_count[:, np.newaxis], 1)
+
+    # Create MEDCoupling mesh
+    coords_array = mesh.vertices
+    if coords_array.shape[1] == 2:
+        # Add z=0 coordinate
+        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
+    else:
+        coords_3d = coords_array
+
+    # Create coordinate array
+    coords_mc = mc.DataArrayDouble(coords_3d)
+    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+
+    # Create unstructured mesh
+    umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
+    umesh.setCoords(coords_mc)
+
+    # Group cells by type for MEDCoupling contiguity requirement
+    cells_by_type = {}
+    for cell_id, cell in enumerate(mesh.cells):
+        n_nodes = len(cell)
+        if n_nodes == 3:
+            cell_type = mc.NORM_TRI3
+        elif n_nodes == 4:
+            cell_type = mc.NORM_QUAD4
+        else:
+            cell_type = mc.NORM_POLYGON
+
+        if cell_type not in cells_by_type:
+            cells_by_type[cell_type] = []
+        cells_by_type[cell_type].append((cell_id, cell))
+
+    # Build mapping from new cell order to original cell_id
+    cell_mapping = []
+    umesh.allocateCells(mesh.n_cells)
+
+    # Insert cells grouped by type
+    for cell_type in sorted(cells_by_type.keys()):
+        for cell_id, cell in cells_by_type[cell_type]:
+            umesh.insertNextCell(cell_type, cell)
+            cell_mapping.append(cell_id)
+
+    umesh.finishInsertingCells()
+
+    # Reorder field values according to cell_mapping
+    u_cells_reordered = u_cells[cell_mapping]
+    grad_cells_reordered = grad_cells[cell_mapping]
+
+    # Create P0 field on cells
+    field_p0 = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+    field_p0.setName(field_name + "_P0")
+    field_p0.setMesh(umesh)
+    field_p0.setTime(0.0, 0, 0)
+
+    field_array_p0 = mc.DataArrayDouble(u_cells_reordered)
+    field_array_p0.setInfoOnComponent(0, field_name + "_P0")
+    field_p0.setArray(field_array_p0)
+    field_p0.checkConsistencyLight()
+
+    # Create P0 gradient field on cells (2 components: dx, dy)
+    field_grad_p0 = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+    field_grad_p0.setName("gradient_" + field_name + "_P0")
+    field_grad_p0.setMesh(umesh)
+    field_grad_p0.setTime(0.0, 0, 0)
+
+    field_array_grad_p0 = mc.DataArrayDouble(grad_cells_reordered)
+    field_array_grad_p0.setInfoOnComponent(0, "d" + field_name + "/dx")
+    field_array_grad_p0.setInfoOnComponent(1, "d" + field_name + "/dy")
+    field_grad_p0.setArray(field_array_grad_p0)
+    field_grad_p0.checkConsistencyLight()
+
+    # Create P1 field on nodes
+    field_p1 = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+    field_p1.setName(field_name + "_P1")
+    field_p1.setMesh(umesh)
+    field_p1.setTime(0.0, 0, 0)
+
+    field_array_p1 = mc.DataArrayDouble(u_vertices)
+    field_array_p1.setInfoOnComponent(0, field_name + "_P1")
+    field_p1.setArray(field_array_p1)
+    field_p1.checkConsistencyLight()
+
+    # Create P1 gradient field on nodes (2 components: dx, dy)
+    field_grad_p1 = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+    field_grad_p1.setName("gradient_" + field_name + "_P1")
+    field_grad_p1.setMesh(umesh)
+    field_grad_p1.setTime(0.0, 0, 0)
+
+    field_array_grad_p1 = mc.DataArrayDouble(grad_vertices)
+    field_array_grad_p1.setInfoOnComponent(0, "d" + field_name + "/dx")
+    field_array_grad_p1.setInfoOnComponent(1, "d" + field_name + "/dy")
+    field_grad_p1.setArray(field_array_grad_p1)
+    field_grad_p1.checkConsistencyLight()
+
+    # Write MED file with mesh
+    med_mesh = mc.MEDFileUMesh()
+    med_mesh.setMeshAtLevel(0, umesh)
+    med_mesh.setName("solution_mesh")
+    med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
+
+    # Write all fields
+    med_writer_p0 = mc.MEDFileField1TS()
+    med_writer_p0.setFieldNoProfileSBT(field_p0)
+    med_writer_p0.write(filename, 0)
+
+    med_writer_grad_p0 = mc.MEDFileField1TS()
+    med_writer_grad_p0.setFieldNoProfileSBT(field_grad_p0)
+    med_writer_grad_p0.write(filename, 0)
+
+    med_writer_p1 = mc.MEDFileField1TS()
+    med_writer_p1.setFieldNoProfileSBT(field_p1)
+    med_writer_p1.write(filename, 0)
+
+    med_writer_grad_p1 = mc.MEDFileField1TS()
+    med_writer_grad_p1.setFieldNoProfileSBT(field_grad_p1)
+    med_writer_grad_p1.write(filename, 0)
+
+    print(f"P0 and P1 fields with gradients exported to MED: {filename}")
+    print(f"  Fields: {field_name}_P0, {field_name}_P1, gradient_{field_name}_P0, gradient_{field_name}_P1")
+
+def _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name):
+    """
+    Export P0 and P1 fields along with their gradient magnitudes to the same MED file.
+    
+    Creates four fields:
+    - {field_name}_P0: P0 projection (cell-centered)
+    - {field_name}_P1: P1 projection (vertex-based)
+    - gradient_mag_{field_name}_P0: P0 gradient magnitude (cell-centered scalar)
+    - gradient_mag_{field_name}_P1: P1 gradient magnitude (vertex-based scalar)
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver with the mesh
+    u_dofs : array
+        Solution degrees of freedom
+    filename : str
+        Output MED file name
+    field_name : str
+        Base name for fields
+    """
+    mesh = solver.mesh
+    
+    # Compute P0 values and gradients at cell centroids
+    u_cells = np.zeros(mesh.n_cells)
+    grad_mag_cells = np.zeros(mesh.n_cells)
+    cell_centroids = np.zeros((mesh.n_cells, 2))
+    
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        cell_centroids[cell_id] = cent
+        u_cells[cell_id] = solver.evaluate_solution(u_dofs, cent, cell_id)
+    
+    grad_cells = _compute_gradients_numerical(solver, u_dofs, cell_centroids, 
+                                               np.arange(mesh.n_cells))
+    grad_mag_cells = np.sqrt(grad_cells[:, 0]**2 + grad_cells[:, 1]**2)
+    
+    # Compute P1 values and gradients at vertices using averaging from adjacent cells
+    u_vertices = np.zeros(mesh.n_vertices)
+    grad_mag_vertices = np.zeros(mesh.n_vertices)
+    vertex_count = np.zeros(mesh.n_vertices)
+
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            vertex_pos = mesh.vertices[vertex_id]
+            u_val = solver.evaluate_solution(u_dofs, vertex_pos, cell_id)
+            u_vertices[vertex_id] += u_val
+            grad_mag_vertices[vertex_id] += grad_mag_cells[cell_id]
+            vertex_count[vertex_id] += 1
+
+    # Average values and gradient magnitudes at vertices shared by multiple cells
+    u_vertices /= np.maximum(vertex_count, 1)
+    grad_mag_vertices /= np.maximum(vertex_count, 1)
+
+    # Create MEDCoupling mesh
+    coords_array = mesh.vertices
+    if coords_array.shape[1] == 2:
+        # Add z=0 coordinate
+        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
+    else:
+        coords_3d = coords_array
+
+    # Create coordinate array
+    coords_mc = mc.DataArrayDouble(coords_3d)
+    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+
+    # Create unstructured mesh
+    umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
+    umesh.setCoords(coords_mc)
+
+    # Group cells by type for MEDCoupling contiguity requirement
+    cells_by_type = {}
+    for cell_id, cell in enumerate(mesh.cells):
+        n_nodes = len(cell)
+        if n_nodes == 3:
+            cell_type = mc.NORM_TRI3
+        elif n_nodes == 4:
+            cell_type = mc.NORM_QUAD4
+        else:
+            cell_type = mc.NORM_POLYGON
+
+        if cell_type not in cells_by_type:
+            cells_by_type[cell_type] = []
+        cells_by_type[cell_type].append((cell_id, cell))
+
+    # Build mapping from new cell order to original cell_id
+    cell_mapping = []
+    umesh.allocateCells(mesh.n_cells)
+
+    # Insert cells grouped by type
+    for cell_type in sorted(cells_by_type.keys()):
+        for cell_id, cell in cells_by_type[cell_type]:
+            umesh.insertNextCell(cell_type, cell)
+            cell_mapping.append(cell_id)
+
+    umesh.finishInsertingCells()
+
+    # Reorder field values according to cell_mapping
+    u_cells_reordered = u_cells[cell_mapping]
+    grad_mag_cells_reordered = grad_mag_cells[cell_mapping]
+
+    # Create P0 field on cells
+    field_p0 = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+    field_p0.setName(field_name + "_P0")
+    field_p0.setMesh(umesh)
+    field_p0.setTime(0.0, 0, 0)
+
+    field_array_p0 = mc.DataArrayDouble(u_cells_reordered)
+    field_array_p0.setInfoOnComponent(0, field_name + "_P0")
+    field_p0.setArray(field_array_p0)
+    field_p0.checkConsistencyLight()
+
+    # Create P0 gradient magnitude field on cells
+    field_grad_mag_p0 = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+    field_grad_mag_p0.setName("gradient_mag_" + field_name + "_P0")
+    field_grad_mag_p0.setMesh(umesh)
+    field_grad_mag_p0.setTime(0.0, 0, 0)
+
+    field_array_grad_mag_p0 = mc.DataArrayDouble(grad_mag_cells_reordered)
+    field_array_grad_mag_p0.setInfoOnComponent(0, "|grad " + field_name + "|")
+    field_grad_mag_p0.setArray(field_array_grad_mag_p0)
+    field_grad_mag_p0.checkConsistencyLight()
+
+    # Create P1 field on nodes
+    field_p1 = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+    field_p1.setName(field_name + "_P1")
+    field_p1.setMesh(umesh)
+    field_p1.setTime(0.0, 0, 0)
+
+    field_array_p1 = mc.DataArrayDouble(u_vertices)
+    field_array_p1.setInfoOnComponent(0, field_name + "_P1")
+    field_p1.setArray(field_array_p1)
+    field_p1.checkConsistencyLight()
+
+    # Create P1 gradient magnitude field on nodes
+    field_grad_mag_p1 = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+    field_grad_mag_p1.setName("gradient_mag_" + field_name + "_P1")
+    field_grad_mag_p1.setMesh(umesh)
+    field_grad_mag_p1.setTime(0.0, 0, 0)
+
+    field_array_grad_mag_p1 = mc.DataArrayDouble(grad_mag_vertices)
+    field_array_grad_mag_p1.setInfoOnComponent(0, "|grad " + field_name + "|")
+    field_grad_mag_p1.setArray(field_array_grad_mag_p1)
+    field_grad_mag_p1.checkConsistencyLight()
+
+    # Write MED file with mesh
+    med_mesh = mc.MEDFileUMesh()
+    med_mesh.setMeshAtLevel(0, umesh)
+    med_mesh.setName("solution_mesh")
+    med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
+
+    # Write all fields
+    med_writer_p0 = mc.MEDFileField1TS()
+    med_writer_p0.setFieldNoProfileSBT(field_p0)
+    med_writer_p0.write(filename, 0)
+
+    med_writer_grad_mag_p0 = mc.MEDFileField1TS()
+    med_writer_grad_mag_p0.setFieldNoProfileSBT(field_grad_mag_p0)
+    med_writer_grad_mag_p0.write(filename, 0)
+
+    med_writer_p1 = mc.MEDFileField1TS()
+    med_writer_p1.setFieldNoProfileSBT(field_p1)
+    med_writer_p1.write(filename, 0)
+
+    med_writer_grad_mag_p1 = mc.MEDFileField1TS()
+    med_writer_grad_mag_p1.setFieldNoProfileSBT(field_grad_mag_p1)
+    med_writer_grad_mag_p1.write(filename, 0)
+
+    print(f"P0 and P1 fields with gradient magnitudes exported to MED: {filename}")
+    print(f"  Fields: {field_name}_P0, {field_name}_P1, gradient_mag_{field_name}_P0, gradient_mag_{field_name}_P1")
 
 def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
                                          output_file="solution_tria.med",
