@@ -108,3 +108,101 @@ def create_square_mesh(n=4):
             cells.append(cell)
     
     return PolygonalMesh(vertices, cells)
+
+
+def create_rectangle_mesh(length=1.0, height=1.0, nx=4, ny=4):
+    """Create a rectangle mesh divided into quadrilaterals.
+
+    Parameters:
+    -----------
+    length : float
+        Extent in the x-direction
+    height : float
+        Extent in the y-direction
+    nx : int
+        Number of divisions in x
+    ny : int
+        Number of divisions in y
+
+    Returns:
+    --------
+    PolygonalMesh
+        A rectangle [0,length]x[0,height] divided into nx×ny quad cells
+    """
+    x = np.linspace(0, length, nx+1)
+    y = np.linspace(0, height, ny+1)
+
+    vertices = []
+    for j in range(ny+1):
+        for i in range(nx+1):
+            vertices.append([x[i], y[j]])
+    vertices = np.array(vertices)
+
+    cells = []
+    for j in range(ny):
+        for i in range(nx):
+            idx = j * (nx+1) + i
+            cell = [idx, idx+1, idx+nx+2, idx+nx+1]
+            cells.append(cell)
+
+    return PolygonalMesh(vertices, cells)
+
+
+def create_circle_mesh(radius=1.0, n_radial=3, n_circ=32):
+    """Create a disk (circular) mesh using concentric rings.
+
+    The mesh is formed by a center vertex plus `n_radial` rings, each with
+    `n_circ` points. Cells are triangles adjacent to the center for the
+    innermost ring and quads between consecutive rings elsewhere.
+
+    Parameters:
+    -----------
+    radius : float
+        Radius of the disk
+    n_radial : int
+        Number of radial subdivisions (rings)
+    n_circ : int
+        Number of angular subdivisions (per ring)
+
+    Returns:
+    --------
+    PolygonalMesh
+        A polygonal mesh approximating the disk
+    """
+    if n_radial < 1:
+        raise ValueError("n_radial must be >= 1")
+    if n_circ < 3:
+        raise ValueError("n_circ must be >= 3")
+
+    vertices = []
+    # center
+    vertices.append([0.0, 0.0])
+
+    # rings
+    radii = np.linspace(0.0, radius, n_radial+1)[1:]
+    for r in radii:
+        for j in range(n_circ):
+            theta = 2.0 * np.pi * j / n_circ
+            vertices.append([r * np.cos(theta), r * np.sin(theta)])
+
+    vertices = np.array(vertices)
+
+    def idx(ring, ang):
+        # ring: 1..n_radial, ang: 0..n_circ-1
+        return 1 + (ring-1) * n_circ + (ang % n_circ)
+
+    cells = []
+    # innermost cells (triangles connecting center and first ring)
+    for j in range(n_circ):
+        cells.append([0, idx(1, j), idx(1, j+1)])
+
+    # cells between rings (quads)
+    for ring in range(2, n_radial+1):
+        for j in range(n_circ):
+            a = idx(ring-1, j)
+            b = idx(ring-1, j+1)
+            c = idx(ring, j+1)
+            d = idx(ring, j)
+            cells.append([a, b, c, d])
+
+    return PolygonalMesh(vertices, cells)
