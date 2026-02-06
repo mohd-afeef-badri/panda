@@ -192,7 +192,20 @@ if __name__ == "__main__":
               "pressure": {"type": "scalar", "components": [2]}
             })
 
-    # # Export to MED format
-    # med_io.export_to_med(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
-    # med_io.export_to_med(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
-    # print("Open these files in SALOME ParaVis to visualize the solution!\n")
+        med_io.export_to_med(solver, u_dofs, 
+            filename="./solution/stokes_P0.med", 
+            fields={
+                "velocity": {"type": "vector", "components": [0, 1]},
+                "pressure": {"type": "scalar", "components": [2]}
+            }, 
+            method="P0")
+
+        # Also export P1 vertex version for smoother visualization
+        med_io.export_to_med(solver, u_dofs,
+            filename="./solution/stokes_P1.med",
+            fields={
+                "velocity": {"type": "vector", "components": [0, 1]},
+                "pressure": {"type": "scalar", "components": [2]}
+            },
+            method="P1_vertex")
+        print("Open these files in SALOME ParaVis to visualize the solution!\n")

@@ -238,31 +238,144 @@ def extract_edge_groups_from_med(filename, mesh_name=None):
     return edge_groups
 
 
+def _evaluate_fields_at_point_med(solver, u_dofs, point, cell_id, fields):
+    """
+    Evaluate all fields at a given point.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    point : array-like
+        Point coordinates [x, y]
+    cell_id : int
+        Cell ID for evaluation context
+    fields : dict
+        Field specifications: {name: {"type": "scalar"|"vector", "components": [indices]}}
+    
+    Returns:
+    --------
+    dict : {field_name: field_value}
+        For scalars: field_value is a float
+        For vectors: field_value is a numpy array
+    """
+    # Get solution values at this point
+    sol_values = solver.evaluate_solution(u_dofs, point, cell_id)
+    
+    # Handle case where evaluate_solution returns a single value
+    if not isinstance(sol_values, (tuple, list, np.ndarray)):
+        sol_values = [sol_values]
+    else:
+        sol_values = np.atleast_1d(sol_values)
+    
+    # Extract field values based on component indices
+    field_values = {}
+    for field_name, field_spec in fields.items():
+        components = field_spec["components"]
+        field_type = field_spec["type"]
+        
+        if field_type == "scalar":
+            # Single component
+            field_values[field_name] = float(sol_values[components[0]])
+        elif field_type == "vector":
+            # Multiple components
+            field_values[field_name] = np.array([sol_values[i] for i in components], dtype=float)
+        else:
+            raise ValueError(f"Unknown field type: {field_type}")
+    
+    return field_values
+
+
 def export_to_med(solver, u_dofs, filename="solution.med", field_name="u",
-                  method="P0"):
+                  method="P0", fields=None):
+    """
+    Export solution to MED format with flexible field specification.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver containing mesh and evaluate_solution method
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED filename
+    field_name : str
+        Legacy parameter (used if fields is None). Default field name.
+    method : str
+        Export method: "P0", "P1_vertex", "P0_P1", "P0_P1_gradients", "P0_P1_gradient_mag"
+    fields : dict or str, optional
+        Field specification. Can be:
+        - str: single scalar field name (e.g., "u" for Poisson)
+        - dict: {"field_name": {"type": "scalar"|"vector", "components": [indices]}}
+        
+        Examples:
+        - Poisson: fields="u" or fields={"u": {"type": "scalar", "components": [0]}}
+        - Stokes: fields={
+                      "velocity": {"type": "vector", "components": [0, 1]},
+                      "pressure": {"type": "scalar", "components": [2]}
+                  }
+    
+    If fields is None, uses the legacy field_name parameter for backward compatibility.
+    """
     if mc is None:
         raise ImportError("MEDCoupling (mc) is required to export MED files")
-    if method == "P0":
-        _export_med_p0(solver, u_dofs, filename, field_name)
+    
+    # Convert simple string to dict format
+    if fields is None:
+        fields = {field_name: {"type": "scalar", "components": [0]}}
+    elif isinstance(fields, str):
+        fields = {fields: {"type": "scalar", "components": [0]}}
+    
+    # For legacy methods that don't support multiple fields, handle specially
+    if method in ["P0_P1", "P0_P1_gradients", "P0_P1_gradient_mag"]:
+        # These methods create their own field naming, use field_name as base
+        if method == "P0_P1":
+            _export_med_p0_p1(solver, u_dofs, filename, field_name + "_P0", field_name + "_P1")
+        elif method == "P0_P1_gradients":
+            _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name)
+        elif method == "P0_P1_gradient_mag":
+            _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name)
+    elif method == "P0":
+        _export_med_p0_multi(solver, u_dofs, filename, fields)
     elif method == "P1_vertex":
-        _export_med_p1_vertex(solver, u_dofs, filename, field_name)
-    elif method == "P0_P1":
-        _export_med_p0_p1(solver, u_dofs, filename, field_name + "_P0", field_name + "_P1")
-    elif method == "P0_P1_gradients":
-        _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name)
-    elif method == "P0_P1_gradient_mag":
-        _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name)
+        _export_med_p1_vertex_multi(solver, u_dofs, filename, fields)
     else:
         raise ValueError(f"Unknown export method: {method}")
 
 
-def _export_med_p0(solver, u_dofs, filename, field_name):
+def _export_med_p0_multi(solver, u_dofs, filename, fields):
+    """
+    Export multiple fields at P0 (cell-centered) to MED format.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED file name
+    fields : dict
+        Field specifications: {name: {"type": "scalar"|"vector", "components": [indices]}}
+    """
     mesh = solver.mesh
+    
+    # Initialize storage for all fields
+    field_data = {}
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] = np.zeros(mesh.n_cells)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_data[field_name] = np.zeros((mesh.n_cells, n_components))
+    
     # Evaluate at cell centroids
-    u_cells = np.zeros(mesh.n_cells)
     for cell_id in range(mesh.n_cells):
         cent = mesh.cell_centroid(cell_id)
-        u_cells[cell_id] = solver.evaluate_solution(u_dofs, cent, cell_id)
+        cell_fields = _evaluate_fields_at_point_med(solver, u_dofs, cent, cell_id, fields)
+        
+        for field_name, field_value in cell_fields.items():
+            field_data[field_name][cell_id] = field_value
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
@@ -307,51 +420,92 @@ def _export_med_p0(solver, u_dofs, filename, field_name):
 
     umesh.finishInsertingCells()
 
-    # Reorder field values according to cell_mapping
-    u_cells_reordered = u_cells[cell_mapping]
-
-    # Create field on cells
-    field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
-    field.setName(field_name)
-    field.setMesh(umesh)
-    field.setTime(0.0, 0, 0)  # time, iteration, order
-
-    # Set field values
-    field_array = mc.DataArrayDouble(u_cells_reordered)
-    field_array.setInfoOnComponent(0, field_name)
-    field.setArray(field_array)
-
-    # Check consistency
-    field.checkConsistencyLight()
-
-    # Write MED file
+    # Write MED file with mesh
     med_mesh = mc.MEDFileUMesh()
     med_mesh.setMeshAtLevel(0, umesh)
     med_mesh.setName("solution_mesh")
     med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
 
-    med_writer = mc.MEDFileField1TS()
-    med_writer.setFieldNoProfileSBT(field)
-    med_writer.write(filename, 0)  # 0 = append mode
+    # Write all fields to MED file
+    for field_name, field_spec in fields.items():
+        # Reorder field values according to cell_mapping
+        field_reordered = field_data[field_name][cell_mapping]
+        
+        # Create MEDCoupling field
+        field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+        field.setName(field_name)
+        field.setMesh(umesh)
+        field.setTime(0.0, 0, 0)  # time, iteration, order
+
+        # Set field values
+        if field_spec["type"] == "scalar":
+            field_array = mc.DataArrayDouble(field_reordered)
+            field_array.setInfoOnComponent(0, field_name)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            # Use MEDCoupling's constructor with (data, num_tuples, num_components)
+            field_array = mc.DataArrayDouble(field_reordered.ravel().tolist(), len(field_reordered), n_components)
+            for i, comp_idx in enumerate(field_spec["components"]):
+                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+        
+        field.setArray(field_array)
+        field.checkConsistencyLight()
+
+        # Write field to MED file
+        med_writer = mc.MEDFileField1TS()
+        med_writer.setFieldNoProfileSBT(field)
+        med_writer.write(filename, 0)  # 0 = append mode
 
     print(f"P0 projection exported to MED: {filename}")
+    print(f"  Fields: {', '.join(fields.keys())}")
 
 
-def _export_med_p1_vertex(solver, u_dofs, filename, field_name):
+def _export_med_p1_vertex_multi(solver, u_dofs, filename, fields):
+    """
+    Export multiple fields at P1 vertex (vertex-centered with averaging) to MED format.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED file name
+    fields : dict
+        Field specifications: {name: {"type": "scalar"|"vector", "components": [indices]}}
+    """
     mesh = solver.mesh
-    # Interpolate to vertices using averaging from adjacent cells
-    u_vertices = np.zeros(mesh.n_vertices)
+    
+    # Initialize storage for all fields
+    field_data = {}
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] = np.zeros(mesh.n_vertices)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
+    
     vertex_count = np.zeros(mesh.n_vertices)
 
+    # Interpolate to vertices using averaging from adjacent cells
     for cell_id, cell in enumerate(mesh.cells):
         for vertex_id in cell:
             vertex_pos = mesh.vertices[vertex_id]
-            u_val = solver.evaluate_solution(u_dofs, vertex_pos, cell_id)
-            u_vertices[vertex_id] += u_val
+            vertex_fields = _evaluate_fields_at_point_med(solver, u_dofs, vertex_pos, cell_id, fields)
+            
+            for field_name, field_value in vertex_fields.items():
+                field_data[field_name][vertex_id] += field_value
+            
             vertex_count[vertex_id] += 1
 
     # Average values at vertices shared by multiple cells
-    u_vertices /= np.maximum(vertex_count, 1)
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] /= np.maximum(vertex_count, 1)
+        elif field_spec["type"] == "vector":
+            for i in range(mesh.n_vertices):
+                if vertex_count[i] > 0:
+                    field_data[field_name][i] /= vertex_count[i]
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
@@ -393,31 +547,49 @@ def _export_med_p1_vertex(solver, u_dofs, filename, field_name):
 
     umesh.finishInsertingCells()
 
-    # Create field on nodes (no reordering needed for node fields)
-    field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
-    field.setName(field_name)
-    field.setMesh(umesh)
-    field.setTime(0.0, 0, 0)
-
-    # Set field values
-    field_array = mc.DataArrayDouble(u_vertices)
-    field_array.setInfoOnComponent(0, field_name)
-    field.setArray(field_array)
-
-    # Check consistency
-    field.checkConsistencyLight()
-
-    # Write MED file
+    # Write MED file with mesh
     med_mesh = mc.MEDFileUMesh()
     med_mesh.setMeshAtLevel(0, umesh)
     med_mesh.setName("solution_mesh")
     med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
 
-    med_writer = mc.MEDFileField1TS()
-    med_writer.setFieldNoProfileSBT(field)
-    med_writer.write(filename, 0)  # 0 = append mode
+    # Write all fields to MED file
+    for field_name, field_spec in fields.items():
+        # Create MEDCoupling field on nodes (no reordering needed for node fields)
+        field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+        field.setName(field_name)
+        field.setMesh(umesh)
+        field.setTime(0.0, 0, 0)
+
+        # Set field values
+        if field_spec["type"] == "scalar":
+            field_array = mc.DataArrayDouble(field_data[field_name])
+            field_array.setInfoOnComponent(0, field_name)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            # Use MEDCoupling's constructor with (data, num_tuples, num_components)
+            field_array = mc.DataArrayDouble(field_data[field_name].ravel().tolist(), len(field_data[field_name]), n_components)
+            for i, comp_idx in enumerate(field_spec["components"]):
+                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+        
+        field.setArray(field_array)
+        field.checkConsistencyLight()
+
+        # Write field to MED file
+        med_writer = mc.MEDFileField1TS()
+        med_writer.setFieldNoProfileSBT(field)
+        med_writer.write(filename, 0)  # 0 = append mode
 
     print(f"P1 vertex interpolation exported to MED: {filename}")
+    print(f"  Fields: {', '.join(fields.keys())}")
+
+
+def _export_med_p1_vertex(solver, u_dofs, filename, field_name):
+    """Legacy function for backward compatibility. Use _export_med_p1_vertex_multi with fields dict."""
+    fields = {field_name: {"type": "scalar", "components": [0]}}
+    _export_med_p1_vertex_multi(solver, u_dofs, filename, fields)
+
+
 
 def _export_med_p0_p1(solver, u_dofs, filename, field_name_p0, field_name_p1):
     """
@@ -545,6 +717,12 @@ def _export_med_p0_p1(solver, u_dofs, filename, field_name_p0, field_name_p1):
     med_writer_p1.write(filename, 0)  # 0 = append mode
 
     print(f"P0 and P1 projections exported to MED: {filename}")
+
+
+def _export_med_p0(solver, u_dofs, filename, field_name):
+    """Legacy function for backward compatibility. Use _export_med_p0_multi with fields dict."""
+    fields = {field_name: {"type": "scalar", "components": [0]}}
+    _export_med_p0_multi(solver, u_dofs, filename, fields)
 
 def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, delta=1e-6):
     """
