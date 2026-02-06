@@ -182,7 +182,37 @@ if __name__ == "__main__":
     vtk_writer.export_to_vtk(
         solver,
         u_dofs,
-        "./solution/elasticity_solution.vtk",
+        "./solution/elasticity_solution_P0.vtk",
+        fields={
+            "displacement": {"type": "vector", "components": [0, 1]}
+        },
+        method="P0"
+    )
+
+    vtk_writer.export_to_vtk(
+        solver,
+        u_dofs,
+        "./solution/elasticity_solution_P1_vertex.vtk",
+        fields={
+            "displacement": {"type": "vector", "components": [0, 1]}
+        },
+        method="P1_vertex"
+    )
+
+    med_io.export_to_med(
+        solver,
+        u_dofs,
+        "./solution/elasticity_solution_P1_vertex.med",
+        fields={
+            "displacement": {"type": "vector", "components": [0, 1]}
+        },
+        method="P1_vertex"
+    )
+
+    med_io.export_to_med(
+        solver,
+        u_dofs,
+        "./solution/elasticity_solution_P0.med",
         fields={
             "displacement": {"type": "vector", "components": [0, 1]}
         },
