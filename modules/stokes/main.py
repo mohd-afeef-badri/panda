@@ -55,47 +55,51 @@ if __name__ == "__main__":
     u_dofs = solver.solve(f_source)
 
     # 4. Postprocess
-    if u_dofs is not None:
-        print("Solve successful! Visualizing...")
-        
-        plotter.plot_results(mesh, solver, u_dofs)
-        # Export discontinuous cell data (Raw DG result)
-        vtk_io.export_solution(solver, u_dofs,
-            filename="./solution/stokes_P0.vtk", 
-            fields={
-                "velocity": {"type": "vector", "components": [0, 1]},
-                "pressure": {"type": "scalar", "components": [2]}
-            })
+    print("\n" + "="*60)
+    print("Plotting results...")
+    plotter.plot_results(mesh, solver, u_dofs)
 
-        # Export smoothed vertex data (Better for streamlines)
-        vtk_io.export_solution(solver, u_dofs,
-                        filename="./solution/stokes_P1.vtk", 
-                        fields={
-                            "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
-                            "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
-                        })
+    print("\n" + "="*60)
+    print("Exporting to VTK visualization:")
+    # Export discontinuous cell data (Raw DG result)
+    vtk_io.export_solution(solver, u_dofs,
+        filename="./solution/stokes_P0.vtk", 
+        fields={
+            "velocity": {"type": "vector", "components": [0, 1]},
+            "pressure": {"type": "scalar", "components": [2]}
+        })
 
-        # Export to triangular mesh (VTK) values are projected to triangular mesh
-        vtk_io.project_and_export_to_triangular_mesh_vtk(solver, u_dofs,
-            tria_mesh_file="./../poisson/mesh/square_tria.med",
-            output_file="./solution/stokes_P1_tria_new.vtk",
-            fields={
-              "velocity": {"type": "vector", "components": [0, 1]},
-              "pressure": {"type": "scalar", "components": [2]}
-            })
+    # Export smoothed vertex data (Better for streamlines)
+    vtk_io.export_solution(solver, u_dofs,
+                    filename="./solution/stokes_P1.vtk", 
+                    fields={
+                        "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
+                        "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
+                    })
 
-        med_io.export_solution(solver, u_dofs,
-            filename="./solution/stokes_P0.med", 
-            fields={
-                "velocity": {"type": "vector", "components": [0, 1]},
-                "pressure": {"type": "scalar", "components": [2]}
-            })
+    # # Export to triangular mesh (VTK) values are projected to triangular mesh
+    # vtk_io.project_and_export_to_triangular_mesh_vtk(solver, u_dofs,
+    #     tria_mesh_file="./../poisson/mesh/square_tria.med",
+    #     output_file="./solution/stokes_P1_tria_new.vtk",
+    #     fields={
+    #       "velocity": {"type": "vector", "components": [0, 1]},
+    #       "pressure": {"type": "scalar", "components": [2]}
+    #     })
 
-        # Also export P1 vertex version for smoother visualization
-        med_io.export_solution(solver, u_dofs,
-            filename="./solution/stokes_P1.med",
-            fields={
-                "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
-                "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
-            })
-        print("Open these files in SALOME ParaVis to visualize the solution!\n")
+    # Export to MED format for visualization in SALOME ParaVis
+    print("\n" + "="*60)
+    print("Exporting to MED visualization:")
+    med_io.export_solution(solver, u_dofs,
+        filename="./solution/stokes_P0.med", 
+        fields={
+            "velocity": {"type": "vector", "components": [0, 1]},
+            "pressure": {"type": "scalar", "components": [2]}
+        })
+
+    # Also export P1 vertex version for smoother visualization
+    med_io.export_solution(solver, u_dofs,
+        filename="./solution/stokes_P1.med",
+        fields={
+            "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
+            "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
+        })

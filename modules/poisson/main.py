@@ -16,16 +16,15 @@ from poisson_DG import *
 if __name__ == "__main__":
 
     # Define the mesh of the domain
-    mesh = polygonal_mesh.create_square_mesh(n=10)
-    # mesh_name = "./mesh/square_poly.med"
-    # mesh = med_io.load_med_mesh_mc(mesh_name)
+    # mesh = polygonal_mesh.create_square_mesh(n=10)
+    mesh = med_io.load_med_mesh_mc("./mesh/square_poly.med")
 
     # Select test case exact solution and corresponding f, g
         # smooth_sin_cos   # extreme_corner
         # circular_layer   # sharp_front
         # multiple_peaks   # corner_peak
         # internal_layer   # boundary_layer
-    u_exact, f, g, name = manufactured_solutions.smooth_sin_cos()
+    u_exact, f, g, name = manufactured_solutions.multiple_peaks()
 
     # Set up DG Poisson solver with boundary conditions
     # Dirichlet BCs on group "boundary"
@@ -49,18 +48,14 @@ if __name__ == "__main__":
     print("="*60)
     
     # Export to triangular mesh (VTK) values are projected to triangular mesh
-    # vtk_io.project_and_export_to_triangular_mesh_vtk(
-    #     solver,
-    #     u_dofs, 
+    # vtk_io.project_and_export_to_triangular_mesh_vtk(solver, u_dofs, 
     #     tria_mesh_file="./mesh/square_tria.med",
     #     output_file="./solution/solution_triangular_poisson.vtk",
     #     fields={"u": {"type": "scalar", "components": [0]}}
     # )
 
     # # Export to triangular mesh
-    # med_io.project_and_export_to_triangular_mesh_med(
-    #     solver,
-    #     u_dofs, 
+    # med_io.project_and_export_to_triangular_mesh_med(solver, u_dofs, 
     #     tria_mesh_file="./mesh/mesh_tria_0.med",
     #     output_file="./solution/solution_triangular.med",
     #     field_name="u"
@@ -74,7 +69,7 @@ if __name__ == "__main__":
     #           fields={"u": {"type": "scalar", "components": [0], "projection": "cell"}})
 
     # Export u using vertex field (P1_vertex projection)
-    vtk_io.export_solution(solver, u_dofs, filename="./solution/solution_p1_vertex.vtk",
+    vtk_io.export_solution(solver, u_dofs, filename="./solution/solution_nodes.vtk",
                           fields={"u": {"type": "scalar", "components": [0], "projection": "nodes"}})
     
     # Export with gradients
@@ -83,9 +78,10 @@ if __name__ == "__main__":
     print("Open these files in ParaView to visualize the solution!\n")
 
     # Export to MED format
-    # med_io.export_solution(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
-    med_io.export_solution(solver, u_dofs, filename="./solution/solution_p0_1.med", fields="u")
-    med_io.export_solution(solver, u_dofs, filename="./solution/solution_p0_2.med",
+    med_io.export_solution(solver, u_dofs, filename="./solution/solution_cells.med", fields="u")
+    med_io.export_solution(solver, u_dofs, filename="./solution/solution_nodes.med",
+                          fields={"u": {"type": "scalar", "components": [0], "projection": "nodes"}})
+    med_io.export_solution(solver, u_dofs, filename="./solution/solution_cells_with_gradient.med",
         fields={
             "u": {
                 "type": "scalar",
@@ -96,5 +92,3 @@ if __name__ == "__main__":
             }
         }
     )
-    # med_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
-    print("Open these files in SALOME ParaVis to visualize the solution!\n")

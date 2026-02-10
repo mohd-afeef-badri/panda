@@ -16,7 +16,7 @@ from elasticity_DG import *
 
 if __name__ == "__main__":
     # 1. Create mesh
-    mesh = polygonal_mesh.create_rectangle_mesh(length=5.0, height=1.0, nx=30, ny=15)
+    # mesh = polygonal_mesh.create_rectangle_mesh(length=5.0, height=1.0, nx=30, ny=15)
     mesh = med_io.load_med_mesh_mc("./mesh/bar_poly.med")
 
     # 2. Select test case
