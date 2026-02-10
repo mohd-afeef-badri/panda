@@ -75,15 +75,45 @@ jobs:
         mv MEDCOUPLING-${MEDCOUPLING_VERSION}-native-UB24.04-SRC $MEDCOUPLING_DIR
     - name: test panda
       run: |
-        cd modules/poisson
         set +e                      # Don't exit immediately on failure
         export MEDCOUPLING_DIR=/home/runner/medcoupling
         source ${MEDCOUPLING_DIR}/env_launch.sh
+        
+        # Test Poisson module
+        echo "Testing Poisson module..."
+        cd modules/poisson
         pytest -v
-        status=$?                  # Capture exit code of pytest
+        poisson_status=$?
+        cd ../..
+        
+        # Test Stokes module
+        echo "Testing Stokes module..."
+        cd modules/stokes
+        pytest -v
+        stokes_status=$?
+        cd ../..
+        
+        # Test Elasticity module
+        echo "Testing Elasticity module..."
+        cd modules/elasticity
+        pytest -v
+        elasticity_status=$?
+        cd ../..
+        
+        # Collect artifacts
         mkdir -p $GITHUB_WORKSPACE/artifacts
-        find . \( -name "*.log" -o -name "*.txt" \) -exec cp --parents {} "$GITHUB_WORKSPACE/artifacts/" \; || true
-        exit $status               # Re-raise make check's status to mark the step as failed if it should
+        find modules/poisson modules/stokes modules/elasticity \( -name "*.log" -o -name "*.txt" \) -exec cp --parents {} "$GITHUB_WORKSPACE/artifacts/" \; || true
+        
+        # Report results
+        echo "Test Results:"
+        echo "  Poisson: $([ $poisson_status -eq 0 ] && echo 'PASSED' || echo 'FAILED')"
+        echo "  Stokes: $([ $stokes_status -eq 0 ] && echo 'PASSED' || echo 'FAILED')"
+        echo "  Elasticity: $([ $elasticity_status -eq 0 ] && echo 'PASSED' || echo 'FAILED')"
+        
+        # Exit with failure if any test failed
+        if [ $poisson_status -ne 0 ] || [ $stokes_status -ne 0 ] || [ $elasticity_status -ne 0 ]; then
+          exit 1
+        fi
     - name: Upload logs
       if: always()  # upload logs even if test failed
       uses: actions/upload-artifact@v4
