@@ -65,17 +65,15 @@ if __name__ == "__main__":
             fields={
                 "velocity": {"type": "vector", "components": [0, 1]},
                 "pressure": {"type": "scalar", "components": [2]}
-            }, 
-            method="P0")
+            })
 
         # Export smoothed vertex data (Better for streamlines)
         vtk_io.export_solution(solver, u_dofs,
-            filename="./solution/stokes_P1.vtk", 
-            fields={
-              "velocity": {"type": "vector", "components": [0, 1]},
-              "pressure": {"type": "scalar", "components": [2]}
-            },
-            method="P1_vertex")
+                        filename="./solution/stokes_P1.vtk", 
+                        fields={
+                            "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
+                            "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
+                        })
 
         # Export to triangular mesh (VTK) values are projected to triangular mesh
         vtk_io.project_and_export_to_triangular_mesh_vtk(solver, u_dofs,
@@ -91,15 +89,13 @@ if __name__ == "__main__":
             fields={
                 "velocity": {"type": "vector", "components": [0, 1]},
                 "pressure": {"type": "scalar", "components": [2]}
-            }, 
-            method="P0")
+            })
 
         # Also export P1 vertex version for smoother visualization
         med_io.export_solution(solver, u_dofs,
             filename="./solution/stokes_P1.med",
             fields={
-                "velocity": {"type": "vector", "components": [0, 1]},
-                "pressure": {"type": "scalar", "components": [2]}
-            },
-            method="P1_vertex")
+                "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
+                "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
+            })
         print("Open these files in SALOME ParaVis to visualize the solution!\n")

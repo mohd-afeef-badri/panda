@@ -66,20 +66,35 @@ if __name__ == "__main__":
     #     field_name="u"
     # )
 
-    # Export u using cell filed
-    vtk_io.export_solution(solver, u_dofs, "./solution/solution_p0.vtk", "u", method="P0")
-    # we can also specify fields as a dictionary
-    # vtk_io.export_solution(solver, u_dofs, "./solution/poisson.vtk", 
-    #           fields={"u": {"type": "scalar", "components": [0]}}, method="P0")
+    # Export u using cell field (P0 projection)
+    vtk_io.export_solution(solver, u_dofs, filename="./solution/solution_p0.vtk", fields="u")  # String defaults to scalar on cells
+    
+    # Export with explicit field specification
+    # vtk_io.export_solution(solver, u_dofs, filename="./solution/poisson.vtk", 
+    #           fields={"u": {"type": "scalar", "components": [0], "projection": "cell"}})
 
-    # Export u using vertex field
-    vtk_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.vtk", "u", method="P1_vertex")
-    # we can also specify fields as a dictionary
-    # vtk_io.export_solution(solver, u_dofs, "./solution/poisson_p1.vtk", 
-    #           fields={"u": {"type": "scalar", "components": [0]}}, method="P1_vertex")
+    # Export u using vertex field (P1_vertex projection)
+    vtk_io.export_solution(solver, u_dofs, filename="./solution/solution_p1_vertex.vtk",
+                          fields={"u": {"type": "scalar", "components": [0], "projection": "nodes"}})
+    
+    # Export with gradients
+    # vtk_io.export_solution(solver, u_dofs, filename="./solution/poisson_p1_grad.vtk", 
+    #           fields={"u": {"type": "scalar", "components": [0], "projection": "nodes", "gradient": True}})
     print("Open these files in ParaView to visualize the solution!\n")
 
     # Export to MED format
-    med_io.export_solution(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
-    med_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
+    # med_io.export_solution(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
+    med_io.export_solution(solver, u_dofs, filename="./solution/solution_p0_1.med", fields="u")
+    med_io.export_solution(solver, u_dofs, filename="./solution/solution_p0_2.med",
+        fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "cell",  # or "nodes"
+                "gradient": True,
+                "gradient_magnitude": True
+            }
+        }
+    )
+    # med_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
     print("Open these files in SALOME ParaVis to visualize the solution!\n")

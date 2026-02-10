@@ -287,10 +287,9 @@ def _evaluate_fields_at_point_med(solver, u_dofs, point, cell_id, fields):
     return field_values
 
 
-def export_solution(solver, u_dofs, filename="solution.med", field_name="u",
-                  method="P0", fields=None):
+def export_solution(solver, u_dofs, filename="solution.med", fields=None):
     """
-    Export solution to MED format with flexible field specification.
+    Export solution to MED format with flexible field and projection specification.
     
     Parameters:
     -----------
@@ -300,48 +299,411 @@ def export_solution(solver, u_dofs, filename="solution.med", field_name="u",
         Solution DOF array
     filename : str
         Output MED filename
-    field_name : str
-        Legacy parameter (used if fields is None). Default field name.
-    method : str
-        Export method: "P0", "P1_vertex", "P0_P1", "P0_P1_gradients", "P0_P1_gradient_mag"
     fields : dict or str, optional
         Field specification. Can be:
-        - str: single scalar field name (e.g., "u" for Poisson)
-        - dict: {"field_name": {"type": "scalar"|"vector", "components": [indices]}}
+        - str: single scalar field name (e.g., "u") → projects to "cell" by default
+        - dict: {
+            "field_name": {
+                "type": "scalar"|"vector",
+                "components": [indices],
+                "projection": "cell"|"nodes",  # "cell" or "nodes" (default: "cell")
+                "gradient": bool,              # compute gradient (default: False)
+                "gradient_magnitude": bool     # compute gradient magnitude (default: False)
+            }
+        }
         
         Examples:
-        - Poisson: fields="u" or fields={"u": {"type": "scalar", "components": [0]}}
+        - Simple scalar on cells: fields="u"
+        - Explicit specification: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "cell"
+            }
+        }
+        - With gradients: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "nodes",
+                "gradient": True,
+                "gradient_magnitude": True
+            }
+        }
         - Stokes: fields={
-                      "velocity": {"type": "vector", "components": [0, 1]},
-                      "pressure": {"type": "scalar", "components": [2]}
-                  }
-    
-    If fields is None, uses the legacy field_name parameter for backward compatibility.
+            "velocity": {
+                "type": "vector",
+                "components": [0, 1],
+                "projection": "nodes"
+            },
+            "pressure": {
+                "type": "scalar",
+                "components": [2],
+                "projection": "cell",
+                "gradient": True
+            }
+        }
     """
     if mc is None:
         raise ImportError("MEDCoupling (mc) is required to export MED files")
     
     # Convert simple string to dict format
     if fields is None:
-        fields = {field_name: {"type": "scalar", "components": [0]}}
+        raise ValueError("fields parameter is required")
     elif isinstance(fields, str):
-        fields = {fields: {"type": "scalar", "components": [0]}}
+        fields = {fields: {"type": "scalar", "components": [0], "projection": "cell"}}
     
-    # For legacy methods that don't support multiple fields, handle specially
-    if method in ["P0_P1", "P0_P1_gradients", "P0_P1_gradient_mag"]:
-        # These methods create their own field naming, use field_name as base
-        if method == "P0_P1":
-            _export_med_p0_p1(solver, u_dofs, filename, field_name + "_P0", field_name + "_P1")
-        elif method == "P0_P1_gradients":
-            _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name)
-        elif method == "P0_P1_gradient_mag":
-            _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name)
-    elif method == "P0":
-        _export_med_p0_multi(solver, u_dofs, filename, fields)
-    elif method == "P1_vertex":
-        _export_med_p1_vertex_multi(solver, u_dofs, filename, fields)
+    # Normalize field specifications (add defaults)
+    for field_name, field_spec in fields.items():
+        if "projection" not in field_spec:
+            field_spec["projection"] = "cell"
+        if "gradient" not in field_spec:
+            field_spec["gradient"] = False
+        if "gradient_magnitude" not in field_spec:
+            field_spec["gradient_magnitude"] = False
+    
+    # Separate fields by projection type and export
+    _export_med_multi(solver, u_dofs, filename, fields)
+
+
+def _export_med_multi(solver, u_dofs, filename, fields):
+    """
+    Export multiple fields with different projections to a single MED file.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED file name
+    fields : dict
+        Field specifications with normalized format
+    """
+    mesh = solver.mesh
+    
+    # Separate fields by projection type
+    cell_fields = {}
+    node_fields = {}
+    
+    for field_name, field_spec in fields.items():
+        if field_spec["projection"] == "cell":
+            cell_fields[field_name] = field_spec
+        elif field_spec["projection"] == "nodes":
+            node_fields[field_name] = field_spec
+        else:
+            raise ValueError(f"Unknown projection: {field_spec['projection']}")
+    
+    # Create MEDCoupling mesh once (shared for all fields)
+    coords_array = mesh.vertices
+    if coords_array.shape[1] == 2:
+        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
     else:
-        raise ValueError(f"Unknown export method: {method}")
+        coords_3d = coords_array
+    
+    coords_mc = mc.DataArrayDouble(coords_3d)
+    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    
+    umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
+    umesh.setCoords(coords_mc)
+    
+    # Group cells by type
+    cells_by_type = {}
+    for cell_id, cell in enumerate(mesh.cells):
+        n_nodes = len(cell)
+        if n_nodes == 3:
+            cell_type = mc.NORM_TRI3
+        elif n_nodes == 4:
+            cell_type = mc.NORM_QUAD4
+        else:
+            cell_type = mc.NORM_POLYGON
+        
+        if cell_type not in cells_by_type:
+            cells_by_type[cell_type] = []
+        cells_by_type[cell_type].append((cell_id, cell))
+    
+    # Build mapping from new cell order to original cell_id (for cell fields)
+    cell_mapping = []
+    umesh.allocateCells(mesh.n_cells)
+    for cell_type in sorted(cells_by_type.keys()):
+        for cell_id, cell in cells_by_type[cell_type]:
+            umesh.insertNextCell(cell_type, cell)
+            cell_mapping.append(cell_id)
+    umesh.finishInsertingCells()
+    
+    # Write mesh to file
+    med_mesh = mc.MEDFileUMesh()
+    med_mesh.setMeshAtLevel(0, umesh)
+    med_mesh.setName("solution_mesh")
+    med_mesh.write(filename, 2)  # 2 = write mode (overwrite)
+    
+    # Export cell-projected fields
+    if cell_fields:
+        _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, cell_fields)
+    
+    # Export node-projected fields
+    if node_fields:
+        _export_med_fields_nodes(solver, u_dofs, filename, umesh, node_fields)
+
+
+def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fields):
+    """
+    Export fields projected to cell centers (P0) with optional gradients.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED file name
+    umesh : MEDCouplingUMesh
+        The mesh object
+    cell_mapping : list
+        Mapping from new cell order to original cell_id
+    fields : dict
+        Field specifications
+    """
+    mesh = solver.mesh
+    
+    # Evaluate fields at cell centroids
+    field_data = {}
+    grad_data = {}
+    grad_mag_data = {}
+    cell_centroids = np.zeros((mesh.n_cells, 2))
+    
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] = np.zeros(mesh.n_cells)
+            if field_spec["gradient"]:
+                grad_data[field_name] = np.zeros((mesh.n_cells, 2))
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] = np.zeros(mesh.n_cells)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_data[field_name] = np.zeros((mesh.n_cells, n_components))
+    
+    # Compute gradients once if needed
+    compute_any_gradient = any(f["gradient"] or f["gradient_magnitude"] for f in fields.values())
+    if compute_any_gradient:
+        for cell_id in range(mesh.n_cells):
+            cell_centroids[cell_id] = mesh.cell_centroid(cell_id)
+        all_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells))
+    
+    # Evaluate all fields at cell centroids
+    for cell_id in range(mesh.n_cells):
+        cent = mesh.cell_centroid(cell_id)
+        cell_fields = _evaluate_fields_at_point_med(solver, u_dofs, cent, cell_id, fields)
+        
+        for field_name, field_value in cell_fields.items():
+            field_data[field_name][cell_id] = field_value
+        
+        # Store gradient if needed
+        if compute_any_gradient:
+            for field_name, field_spec in fields.items():
+                if field_spec["gradient"]:
+                    grad_data[field_name][cell_id] = all_gradients[cell_id]
+                if field_spec["gradient_magnitude"]:
+                    grad_mag_data[field_name][cell_id] = np.linalg.norm(all_gradients[cell_id])
+    
+    # Write all cell fields to MED file
+    for field_name, field_spec in fields.items():
+        # Reorder field values according to cell_mapping
+        field_reordered = field_data[field_name][cell_mapping]
+        
+        # Create and write main field
+        field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+        field.setName(field_name)
+        field.setMesh(umesh)
+        field.setTime(0.0, 0, 0)
+        
+        if field_spec["type"] == "scalar":
+            field_array = mc.DataArrayDouble(field_reordered)
+            field_array.setInfoOnComponent(0, field_name)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_array = mc.DataArrayDouble(field_reordered.ravel().tolist(), len(field_reordered), n_components)
+            for i, comp_idx in enumerate(field_spec["components"]):
+                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+        
+        field.setArray(field_array)
+        field.checkConsistencyLight()
+        
+        med_writer = mc.MEDFileField1TS()
+        med_writer.setFieldNoProfileSBT(field)
+        med_writer.write(filename, 0)  # append mode
+        
+        # Write gradient if requested
+        if field_spec["gradient"] and field_name in grad_data:
+            grad_reordered = grad_data[field_name][cell_mapping]
+            grad_field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+            grad_field.setName(f"gradient_{field_name}")
+            grad_field.setMesh(umesh)
+            grad_field.setTime(0.0, 0, 0)
+            
+            grad_array = mc.DataArrayDouble(grad_reordered)
+            grad_array.setInfoOnComponent(0, f"d{field_name}/dx")
+            grad_array.setInfoOnComponent(1, f"d{field_name}/dy")
+            grad_field.setArray(grad_array)
+            grad_field.checkConsistencyLight()
+            
+            grad_writer = mc.MEDFileField1TS()
+            grad_writer.setFieldNoProfileSBT(grad_field)
+            grad_writer.write(filename, 0)
+        
+        # Write gradient magnitude if requested
+        if field_spec["gradient_magnitude"] and field_name in grad_mag_data:
+            mag_reordered = grad_mag_data[field_name][cell_mapping]
+            mag_field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+            mag_field.setName(f"mag_gradient_{field_name}")
+            mag_field.setMesh(umesh)
+            mag_field.setTime(0.0, 0, 0)
+            
+            mag_array = mc.DataArrayDouble(mag_reordered)
+            mag_array.setInfoOnComponent(0, f"|grad {field_name}|")
+            mag_field.setArray(mag_array)
+            mag_field.checkConsistencyLight()
+            
+            mag_writer = mc.MEDFileField1TS()
+            mag_writer.setFieldNoProfileSBT(mag_field)
+            mag_writer.write(filename, 0)
+    
+    print(f"Cell-projected fields exported to MED: {filename}")
+
+
+def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
+    """
+    Export fields projected to nodes (P1_vertex) with optional gradients.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output MED file name
+    umesh : MEDCouplingUMesh
+        The mesh object
+    fields : dict
+        Field specifications
+    """
+    mesh = solver.mesh
+    
+    # Initialize storage for all fields
+    field_data = {}
+    grad_data = {}
+    grad_mag_data = {}
+    vertex_count = np.zeros(mesh.n_vertices)
+    
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] = np.zeros(mesh.n_vertices)
+            if field_spec["gradient"]:
+                grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
+    
+    # Interpolate to vertices using averaging from adjacent cells
+    compute_any_gradient = any(f["gradient"] or f["gradient_magnitude"] for f in fields.values())
+    cell_gradients = None
+    
+    if compute_any_gradient:
+        # Pre-compute gradients at cell centroids
+        cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
+        cell_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells))
+    
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            vertex_pos = mesh.vertices[vertex_id]
+            vertex_fields = _evaluate_fields_at_point_med(solver, u_dofs, vertex_pos, cell_id, fields)
+            
+            for field_name, field_value in vertex_fields.items():
+                field_data[field_name][vertex_id] += field_value
+            
+            # Accumulate gradients
+            if compute_any_gradient:
+                for field_name, field_spec in fields.items():
+                    if field_spec["gradient"]:
+                        grad_data[field_name][vertex_id] += cell_gradients[cell_id]
+                    if field_spec["gradient_magnitude"]:
+                        grad_mag_data[field_name][vertex_id] += np.linalg.norm(cell_gradients[cell_id])
+            
+            vertex_count[vertex_id] += 1
+    
+    # Average values at vertices shared by multiple cells
+    for field_name, field_spec in fields.items():
+        if field_spec["type"] == "scalar":
+            field_data[field_name] /= np.maximum(vertex_count, 1)
+            if field_spec["gradient"]:
+                grad_data[field_name] /= np.maximum(vertex_count[:, np.newaxis], 1)
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] /= np.maximum(vertex_count, 1)
+        elif field_spec["type"] == "vector":
+            for i in range(mesh.n_vertices):
+                if vertex_count[i] > 0:
+                    field_data[field_name][i] /= vertex_count[i]
+    
+    # Write all node fields to MED file
+    for field_name, field_spec in fields.items():
+        # Create and write main field
+        field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+        field.setName(field_name)
+        field.setMesh(umesh)
+        field.setTime(0.0, 0, 0)
+        
+        if field_spec["type"] == "scalar":
+            field_array = mc.DataArrayDouble(field_data[field_name])
+            field_array.setInfoOnComponent(0, field_name)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            field_array = mc.DataArrayDouble(field_data[field_name].ravel().tolist(), len(field_data[field_name]), n_components)
+            for i, comp_idx in enumerate(field_spec["components"]):
+                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+        
+        field.setArray(field_array)
+        field.checkConsistencyLight()
+        
+        med_writer = mc.MEDFileField1TS()
+        med_writer.setFieldNoProfileSBT(field)
+        med_writer.write(filename, 0)
+        
+        # Write gradient if requested
+        if field_spec["gradient"] and field_name in grad_data:
+            grad_field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+            grad_field.setName(f"gradient_{field_name}")
+            grad_field.setMesh(umesh)
+            grad_field.setTime(0.0, 0, 0)
+            
+            grad_array = mc.DataArrayDouble(grad_data[field_name])
+            grad_array.setInfoOnComponent(0, f"d{field_name}/dx")
+            grad_array.setInfoOnComponent(1, f"d{field_name}/dy")
+            grad_field.setArray(grad_array)
+            grad_field.checkConsistencyLight()
+            
+            grad_writer = mc.MEDFileField1TS()
+            grad_writer.setFieldNoProfileSBT(grad_field)
+            grad_writer.write(filename, 0)
+        
+        # Write gradient magnitude if requested
+        if field_spec["gradient_magnitude"] and field_name in grad_mag_data:
+            mag_field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+            mag_field.setName(f"mag_gradient_{field_name}")
+            mag_field.setMesh(umesh)
+            mag_field.setTime(0.0, 0, 0)
+            
+            mag_array = mc.DataArrayDouble(grad_mag_data[field_name])
+            mag_array.setInfoOnComponent(0, f"|grad {field_name}|")
+            mag_field.setArray(mag_array)
+            mag_field.checkConsistencyLight()
+            
+            mag_writer = mc.MEDFileField1TS()
+            mag_writer.setFieldNoProfileSBT(mag_field)
+            mag_writer.write(filename, 0)
+    
+    print(f"Node-projected fields exported to MED: {filename}")
 
 
 def _export_med_p0_multi(solver, u_dofs, filename, fields):

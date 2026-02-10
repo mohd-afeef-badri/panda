@@ -5,9 +5,9 @@ import numpy as np
 from .med_io import load_med_mesh_mc
 
 
-def export_solution(solver, u_dofs, filename="solution.vtk", fields=None, method="P0"):
+def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
     """
-    Export solution to VTK format with flexible field specification.
+    Export solution to VTK format with flexible field and projection specification.
     
     Parameters:
     -----------
@@ -17,37 +17,144 @@ def export_solution(solver, u_dofs, filename="solution.vtk", fields=None, method
         Solution DOF array
     filename : str
         Output VTK filename
-    fields : dict or str
+    fields : dict or str, optional
         Field specification. Can be:
-        - str: single scalar field name (e.g., "u" for Poisson)
-        - dict: {"field_name": {"type": "scalar"|"vector", "components": [indices]}}
+        - str: single scalar field name (e.g., "u") → projects to "cell" by default
+        - dict: {
+            "field_name": {
+                "type": "scalar"|"vector",
+                "components": [indices],
+                "projection": "cell"|"nodes",  # "cell" or "nodes" (default: "cell")
+                "gradient": bool,              # compute gradient (default: False, scalars only)
+                "gradient_magnitude": bool     # compute gradient magnitude (default: False, scalars only)
+            }
+        }
         
         Examples:
-        - Poisson: fields="u" or fields={"u": {"type": "scalar", "components": [0]}}
-        - Stokes: fields={
-                      "velocity": {"type": "vector", "components": [0, 1]},
-                      "pressure": {"type": "scalar", "components": [2]}
-                  }
-        - Elasticity: fields={
-                          "displacement": {"type": "vector", "components": [0, 1]},
-                          "stress_xx": {"type": "scalar", "components": [2]},
-                          "stress_yy": {"type": "scalar", "components": [3]}
-                      }
-    method : str
-        Export method: "P0" or "P1_vertex"
+        - Simple scalar on cells: fields="u"
+        - Explicit with projection: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "nodes"
+            }
+        }
+        - With gradients: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "nodes",
+                "gradient": True,
+                "gradient_magnitude": True
+            }
+        }
     """
-    # Convert simple string to dict format
-    if isinstance(fields, str):
-        fields = {fields: {"type": "scalar", "components": [0]}}
-    elif fields is None:
-        fields = {"u": {"type": "scalar", "components": [0]}}
+    if fields is None:
+        raise ValueError("fields parameter is required")
+    elif isinstance(fields, str):
+        fields = {fields: {"type": "scalar", "components": [0], "projection": "cell"}}
     
-    if method == "P0":
-        _export_vtk_p0(solver, u_dofs, filename, fields)
-    elif method == "P1_vertex":
-        _export_vtk_p1_vertex(solver, u_dofs, filename, fields)
+    # Normalize field specifications (add defaults)
+    for field_name, field_spec in fields.items():
+        if "projection" not in field_spec:
+            field_spec["projection"] = "cell"
+        if "gradient" not in field_spec:
+            field_spec["gradient"] = False
+        if "gradient_magnitude" not in field_spec:
+            field_spec["gradient_magnitude"] = False
+    
+    # Export based on projections
+    _export_vtk_multi(solver, u_dofs, filename, fields)
+
+
+def _export_vtk_multi(solver, u_dofs, filename, fields):
+    """
+    Export multiple fields with different projections to a single VTK file.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    filename : str
+        Output VTK file name
+    fields : dict
+        Field specifications with normalized format
+    """
+    # Separate fields by projection type
+    cell_fields = {}
+    node_fields = {}
+    
+    for field_name, field_spec in fields.items():
+        if field_spec["projection"] == "cell":
+            cell_fields[field_name] = field_spec
+        elif field_spec["projection"] == "nodes":
+            node_fields[field_name] = field_spec
+        else:
+            raise ValueError(f"Unknown projection: {field_spec['projection']}")
+    
+    # If both cell and node projections, export to separate files
+    if cell_fields and node_fields:
+        # Export cell projection
+        base_name = str(filename).replace('.vtk', '_cell.vtk')
+        _export_vtk_p0(solver, u_dofs, base_name, cell_fields)
+        
+        # Export node projection
+        base_name = str(filename).replace('.vtk', '_nodes.vtk')
+        _export_vtk_p1_vertex(solver, u_dofs, base_name, node_fields)
+    elif cell_fields:
+        _export_vtk_p0(solver, u_dofs, filename, cell_fields)
     else:
-        raise ValueError(f"Unknown export method: {method}")
+        _export_vtk_p1_vertex(solver, u_dofs, filename, node_fields)
+
+
+def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, delta=1e-6):
+    """
+    Compute gradients numerically using finite differences.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array
+    points : array of shape (n, 2)
+        Points at which to evaluate gradients
+    cell_ids : array of shape (n,)
+        Cell IDs for each point
+    delta : float
+        Step size for finite differences
+    
+    Returns:
+    --------
+    gradients : array of shape (n, 2)
+        Gradients [du/dx, du/dy] at each point
+    """
+    n_points = len(points)
+    gradients = np.zeros((n_points, 2))
+    
+    for i, (pt, cell_id) in enumerate(zip(points, cell_ids)):
+        x, y = pt
+        
+        # Evaluate at displaced points
+        u_x_plus = solver.evaluate_solution(u_dofs, np.array([x + delta, y]), cell_id)
+        u_x_minus = solver.evaluate_solution(u_dofs, np.array([x - delta, y]), cell_id)
+        u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
+        u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
+        
+        # Handle vector results (take first component)
+        if isinstance(u_x_plus, (list, np.ndarray)):
+            u_x_plus = u_x_plus[0]
+            u_x_minus = u_x_minus[0]
+            u_y_plus = u_y_plus[0]
+            u_y_minus = u_y_minus[0]
+        
+        du_dx = (u_x_plus - u_x_minus) / (2 * delta)
+        du_dy = (u_y_plus - u_y_minus) / (2 * delta)
+        
+        gradients[i, 0] = du_dx
+        gradients[i, 1] = du_dy
+    
+    return gradients
 
 
 def _evaluate_fields_at_point(solver, u_dofs, point, cell_id, fields):
@@ -88,17 +195,34 @@ def _evaluate_fields_at_point(solver, u_dofs, point, cell_id, fields):
 
 
 def _export_vtk_p0(solver, u_dofs, filename, fields):
-    """Export with P0 projection (cell-centered values)."""
+    """Export with P0 projection (cell-centered values) with optional gradients."""
     mesh = solver.mesh
     
     # Initialize storage for all fields
     field_data = {}
+    grad_data = {}
+    grad_mag_data = {}
+    cell_centroids = np.zeros((mesh.n_cells, 2))
+    
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_cells)
+            if field_spec["gradient"]:
+                grad_data[field_name] = np.zeros((mesh.n_cells, 2))
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] = np.zeros(mesh.n_cells)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_cells, n_components))
+    
+    # Compute gradients once if needed
+    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False) 
+                               for f in fields.values() if f["type"] == "scalar")
+    if compute_any_gradient:
+        for cell_id in range(mesh.n_cells):
+            cell_centroids[cell_id] = mesh.cell_centroid(cell_id)
+        all_gradients = _compute_gradients_numerical_vtk(solver, u_dofs, cell_centroids, 
+                                                         np.arange(mesh.n_cells))
     
     # Evaluate at cell centroids
     for cell_id in range(mesh.n_cells):
@@ -107,25 +231,51 @@ def _export_vtk_p0(solver, u_dofs, filename, fields):
         
         for field_name, field_value in cell_fields.items():
             field_data[field_name][cell_id] = field_value
+        
+        # Store gradient if needed
+        if compute_any_gradient:
+            for field_name, field_spec in fields.items():
+                if field_spec["type"] == "scalar":
+                    if field_spec.get("gradient", False):
+                        grad_data[field_name][cell_id] = all_gradients[cell_id]
+                    if field_spec.get("gradient_magnitude", False):
+                        grad_mag_data[field_name][cell_id] = np.linalg.norm(all_gradients[cell_id])
     
-    _write_vtk_file(mesh, filename, fields, field_data, data_location="CELL")
+    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data, 
+                    data_location="CELL")
     print(f"P0 projection exported to: {filename}")
 
 
 def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
-    """Export with P1 vertex interpolation (vertex-centered values)."""
+    """Export with P1 vertex interpolation (vertex-centered values) with optional gradients."""
     mesh = solver.mesh
     
     # Initialize storage for all fields
     field_data = {}
+    grad_data = {}
+    grad_mag_data = {}
+    vertex_count = np.zeros(mesh.n_vertices)
+    
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_vertices)
+            if field_spec.get("gradient", False):
+                grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
+            if field_spec.get("gradient_magnitude", False):
+                grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
     
-    vertex_count = np.zeros(mesh.n_vertices)
+    # Compute cell gradients once if needed
+    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False)
+                               for f in fields.values() if f["type"] == "scalar")
+    cell_gradients = None
+    
+    if compute_any_gradient:
+        cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
+        cell_gradients = _compute_gradients_numerical_vtk(solver, u_dofs, cell_centroids, 
+                                                          np.arange(mesh.n_cells))
     
     # Interpolate to vertices using averaging from adjacent cells
     for cell_id, cell in enumerate(mesh.cells):
@@ -136,24 +286,39 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
             for field_name, field_value in vertex_fields.items():
                 field_data[field_name][vertex_id] += field_value
             
+            # Accumulate gradients
+            if compute_any_gradient:
+                for field_name, field_spec in fields.items():
+                    if field_spec["type"] == "scalar":
+                        if field_spec.get("gradient", False):
+                            grad_data[field_name][vertex_id] += cell_gradients[cell_id]
+                        if field_spec.get("gradient_magnitude", False):
+                            grad_mag_data[field_name][vertex_id] += np.linalg.norm(cell_gradients[cell_id])
+            
             vertex_count[vertex_id] += 1
     
     # Average values at vertices shared by multiple cells
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] /= np.maximum(vertex_count, 1)
+            if field_spec.get("gradient", False):
+                grad_data[field_name] /= np.maximum(vertex_count[:, np.newaxis], 1)
+            if field_spec.get("gradient_magnitude", False):
+                grad_mag_data[field_name] /= np.maximum(vertex_count, 1)
         elif field_spec["type"] == "vector":
             for i in range(mesh.n_vertices):
                 if vertex_count[i] > 0:
                     field_data[field_name][i] /= vertex_count[i]
     
-    _write_vtk_file(mesh, filename, fields, field_data, data_location="POINT")
+    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data, 
+                    data_location="POINT")
     print(f"P1 vertex interpolation exported to: {filename}")
 
 
-def _write_vtk_file(mesh, filename, fields, field_data, data_location="POINT"):
+def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag_data=None, 
+                    data_location="POINT"):
     """
-    Write VTK file with mesh and field data.
+    Write VTK file with mesh and field data, including optional gradients.
     
     Parameters:
     -----------
@@ -163,9 +328,18 @@ def _write_vtk_file(mesh, filename, fields, field_data, data_location="POINT"):
         Field specifications
     field_data : dict
         {field_name: field_values_array}
+    grad_data : dict, optional
+        {field_name: gradient_values_array} for scalar fields with gradients
+    grad_mag_data : dict, optional
+        {field_name: gradient_magnitude_values_array} for scalar fields with gradient_magnitude
     data_location : str
         "POINT" or "CELL"
     """
+    if grad_data is None:
+        grad_data = {}
+    if grad_mag_data is None:
+        grad_mag_data = {}
+        
     output_path = Path(filename)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(filename, 'w') as f:
@@ -226,6 +400,23 @@ def _write_vtk_file(mesh, filename, fields, field_data, data_location="POINT"):
                         f.write(f"{vec[0]} {vec[1]} {vec[2]}\n")
                     else:
                         raise ValueError(f"Unsupported vector dimension: {len(vec)}")
+        
+        # Write gradient fields if present
+        for field_name in grad_data:
+            grad = grad_data[field_name]
+            f.write(f"VECTORS {field_name}_gradient double\n")
+            for i in range(len(grad)):
+                g = grad[i]
+                # 2D gradient, pad to 3D for VTK
+                f.write(f"{g[0]} {g[1]} 0.0\n")
+        
+        # Write gradient magnitude fields if present
+        for field_name in grad_mag_data:
+            mag = grad_mag_data[field_name]
+            f.write(f"SCALARS {field_name}_gradient_magnitude double 1\n")
+            f.write("LOOKUP_TABLE default\n")
+            for val in mag:
+                f.write(f"{val}\n")
 
 
 def project_and_export_to_triangular_mesh_vtk(solver, u_dofs, tria_mesh_file, 

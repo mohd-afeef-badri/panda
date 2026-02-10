@@ -78,17 +78,15 @@ if __name__ == "__main__":
     vtk_io.export_solution(
         solver,
         u_dofs,
-        "./solution/elasticity_solution_P0.vtk",
-        fields={"displacement": {"type": "vector", "components": [0, 1]}},
-        method="P0"
+        filename="./solution/elasticity_solution_P0.vtk",
+        fields={"displacement": {"type": "vector", "components": [0, 1]}}
     )
 
     vtk_io.export_solution(
         solver,
         u_dofs,
-        "./solution/elasticity_solution_P1_vertex.vtk",
-        fields={"displacement": {"type": "vector", "components": [0, 1]}},
-        method="P1_vertex"
+        filename="./solution/elasticity_solution_P1_vertex.vtk",
+        fields={"displacement": {"type": "vector", "components": [0, 1], "projection": "nodes"}}
     )
 
     # Export to MED for visualization in ParaView
@@ -97,15 +95,13 @@ if __name__ == "__main__":
     med_io.export_solution(
         solver,
         u_dofs,
-        "./solution/elasticity_solution_P1_vertex.med",
-        fields={"displacement": {"type": "vector", "components": [0, 1]}},
-        method="P1_vertex"
+        filename="./solution/elasticity_solution_P1_vertex.med",
+        fields={"displacement": {"type": "vector", "components": [0, 1], "projection": "nodes"}}
     )
 
     med_io.export_solution(
         solver,
         u_dofs,
-        "./solution/elasticity_solution_P0.med",
-        fields={"displacement": {"type": "vector", "components": [0, 1]}},
-        method="P0"
+        filename="./solution/elasticity_solution_P0.med",
+        fields={"displacement": {"type": "vector", "components": [0, 1]}}
     )
