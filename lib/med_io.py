@@ -287,7 +287,7 @@ def _evaluate_fields_at_point_med(solver, u_dofs, point, cell_id, fields):
     return field_values
 
 
-def export_to_med(solver, u_dofs, filename="solution.med", field_name="u",
+def export_solution(solver, u_dofs, filename="solution.med", field_name="u",
                   method="P0", fields=None):
     """
     Export solution to MED format with flexible field specification.

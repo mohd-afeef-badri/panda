@@ -11,7 +11,7 @@ import plotter
 from panda.lib import med_io
 from panda.lib import boundary_conditions
 from panda.lib import polygonal_mesh
-from panda.lib import vtk_writer
+from panda.lib import vtk_io
 from elasticity_DG import *
 
 if __name__ == "__main__":
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # Export to VTK for visualization in ParaView
     print("\n" + "="*60)
     print("Exporting to VTK format...")
-    vtk_writer.export_to_vtk(
+    vtk_io.export_solution(
         solver,
         u_dofs,
         "./solution/elasticity_solution_P0.vtk",
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         method="P0"
     )
 
-    vtk_writer.export_to_vtk(
+    vtk_io.export_solution(
         solver,
         u_dofs,
         "./solution/elasticity_solution_P1_vertex.vtk",
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # Export to MED for visualization in ParaView
     print("\n" + "="*60)
     print("Exporting to MED format...")
-    med_io.export_to_med(
+    med_io.export_solution(
         solver,
         u_dofs,
         "./solution/elasticity_solution_P1_vertex.med",
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         method="P1_vertex"
     )
 
-    med_io.export_to_med(
+    med_io.export_solution(
         solver,
         u_dofs,
         "./solution/elasticity_solution_P0.med",

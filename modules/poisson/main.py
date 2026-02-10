@@ -8,7 +8,7 @@ import plotter
 
 import manufactured_solutions as manufactured_solutions
 from panda.lib import med_io
-from panda.lib import vtk_writer
+from panda.lib import vtk_io
 from panda.lib import boundary_conditions
 from panda.lib import polygonal_mesh
 from poisson_DG import *
@@ -49,7 +49,7 @@ if __name__ == "__main__":
     print("="*60)
     
     # Export to triangular mesh (VTK) values are projected to triangular mesh
-    # vtk_writer.project_and_export_to_triangular_mesh_vtk(
+    # vtk_io.project_and_export_to_triangular_mesh_vtk(
     #     solver,
     #     u_dofs, 
     #     tria_mesh_file="./mesh/square_tria.med",
@@ -67,19 +67,19 @@ if __name__ == "__main__":
     # )
 
     # Export u using cell filed
-    vtk_writer.export_to_vtk(solver, u_dofs, "./solution/solution_p0.vtk", "u", method="P0")
+    vtk_io.export_solution(solver, u_dofs, "./solution/solution_p0.vtk", "u", method="P0")
     # we can also specify fields as a dictionary
-    # vtk_writer.export_to_vtk(solver, u_dofs, "./solution/poisson.vtk", 
+    # vtk_io.export_solution(solver, u_dofs, "./solution/poisson.vtk", 
     #           fields={"u": {"type": "scalar", "components": [0]}}, method="P0")
 
     # Export u using vertex field
-    vtk_writer.export_to_vtk(solver, u_dofs, "./solution/solution_p1_vertex.vtk", "u", method="P1_vertex")
+    vtk_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.vtk", "u", method="P1_vertex")
     # we can also specify fields as a dictionary
-    # vtk_writer.export_to_vtk(solver, u_dofs, "./solution/poisson_p1.vtk", 
+    # vtk_io.export_solution(solver, u_dofs, "./solution/poisson_p1.vtk", 
     #           fields={"u": {"type": "scalar", "components": [0]}}, method="P1_vertex")
     print("Open these files in ParaView to visualize the solution!\n")
 
     # Export to MED format
-    med_io.export_to_med(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
-    med_io.export_to_med(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
+    med_io.export_solution(solver, u_dofs, "./solution/solution_p0.med", "u", method="P0")
+    med_io.export_solution(solver, u_dofs, "./solution/solution_p1_vertex.med", "u", method="P1_vertex")
     print("Open these files in SALOME ParaVis to visualize the solution!\n")

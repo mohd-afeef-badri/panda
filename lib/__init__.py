@@ -4,7 +4,7 @@ from .polygonal_mesh import PolygonalMesh
 from . import io
 from . import boundary_conditions
 from . import med_io
-from . import vtk_writer
+from . import vtk_io
 
-__all__ = ["PolygonalMesh", "io", "boundary_conditions", "med_io", "vtk_writer"]
+__all__ = ["PolygonalMesh", "io", "boundary_conditions", "med_io", "vtk_io"]
 

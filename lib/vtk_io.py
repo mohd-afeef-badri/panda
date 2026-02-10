@@ -5,7 +5,7 @@ import numpy as np
 from .med_io import load_med_mesh_mc
 
 
-def export_to_vtk(solver, u_dofs, filename="solution.vtk", fields=None, method="P0"):
+def export_solution(solver, u_dofs, filename="solution.vtk", fields=None, method="P0"):
     """
     Export solution to VTK format with flexible field specification.
     
@@ -245,7 +245,7 @@ def project_and_export_to_triangular_mesh_vtk(solver, u_dofs, tria_mesh_file,
     output_file : str
         Output VTK filename
     fields : dict or str
-        Field specification (same format as export_to_vtk)
+        Field specification (same format as export_solution)
     """    
     # Convert simple string to dict format
     if isinstance(fields, str):

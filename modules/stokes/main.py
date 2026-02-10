@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import plotter
 
 from panda.lib import med_io
-from panda.lib import vtk_writer
+from panda.lib import vtk_io
 from panda.lib import boundary_conditions
 from panda.lib import polygonal_mesh
 from stokes_DG import *
@@ -60,7 +60,7 @@ if __name__ == "__main__":
         
         plotter.plot_results(mesh, solver, u_dofs)
         # Export discontinuous cell data (Raw DG result)
-        vtk_writer.export_to_vtk(solver, u_dofs, 
+        vtk_io.export_solution(solver, u_dofs,
             filename="./solution/stokes_P0.vtk", 
             fields={
                 "velocity": {"type": "vector", "components": [0, 1]},
@@ -69,7 +69,7 @@ if __name__ == "__main__":
             method="P0")
 
         # Export smoothed vertex data (Better for streamlines)
-        vtk_writer.export_to_vtk(solver, u_dofs,
+        vtk_io.export_solution(solver, u_dofs,
             filename="./solution/stokes_P1.vtk", 
             fields={
               "velocity": {"type": "vector", "components": [0, 1]},
@@ -78,7 +78,7 @@ if __name__ == "__main__":
             method="P1_vertex")
 
         # Export to triangular mesh (VTK) values are projected to triangular mesh
-        vtk_writer.project_and_export_to_triangular_mesh_vtk(solver, u_dofs, 
+        vtk_io.project_and_export_to_triangular_mesh_vtk(solver, u_dofs,
             tria_mesh_file="./../poisson/mesh/square_tria.med",
             output_file="./solution/stokes_P1_tria_new.vtk",
             fields={
@@ -86,7 +86,7 @@ if __name__ == "__main__":
               "pressure": {"type": "scalar", "components": [2]}
             })
 
-        med_io.export_to_med(solver, u_dofs, 
+        med_io.export_solution(solver, u_dofs,
             filename="./solution/stokes_P0.med", 
             fields={
                 "velocity": {"type": "vector", "components": [0, 1]},
@@ -95,7 +95,7 @@ if __name__ == "__main__":
             method="P0")
 
         # Also export P1 vertex version for smoother visualization
-        med_io.export_to_med(solver, u_dofs,
+        med_io.export_solution(solver, u_dofs,
             filename="./solution/stokes_P1.med",
             fields={
                 "velocity": {"type": "vector", "components": [0, 1]},
