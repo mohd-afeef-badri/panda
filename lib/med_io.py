@@ -541,9 +541,17 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             grad_field.setMesh(umesh)
             grad_field.setTime(0.0, 0, 0)
             
-            grad_array = mc.DataArrayDouble(grad_reordered)
+            # Ensure gradients have 3 components for 2D meshes (pad z=0)
+            if mesh.vertices.shape[1] == 2:
+                grad_reordered_padded = np.column_stack([grad_reordered, np.zeros(len(grad_reordered))])
+            else:
+                grad_reordered_padded = grad_reordered
+
+            grad_array = mc.DataArrayDouble(grad_reordered_padded)
             grad_array.setInfoOnComponent(0, f"d{field_name}/dx")
             grad_array.setInfoOnComponent(1, f"d{field_name}/dy")
+            if grad_reordered_padded.shape[1] > 2:
+                grad_array.setInfoOnComponent(2, f"d{field_name}/dz")
             grad_field.setArray(grad_array)
             grad_field.checkConsistencyLight()
             
@@ -677,9 +685,17 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             grad_field.setMesh(umesh)
             grad_field.setTime(0.0, 0, 0)
             
-            grad_array = mc.DataArrayDouble(grad_data[field_name])
+            # Ensure gradients have 3 components for 2D meshes (pad z=0)
+            if mesh.vertices.shape[1] == 2:
+                grad_padded = np.column_stack([grad_data[field_name], np.zeros(len(grad_data[field_name]))])
+            else:
+                grad_padded = grad_data[field_name]
+
+            grad_array = mc.DataArrayDouble(grad_padded)
             grad_array.setInfoOnComponent(0, f"d{field_name}/dx")
             grad_array.setInfoOnComponent(1, f"d{field_name}/dy")
+            if grad_padded.shape[1] > 2:
+                grad_array.setInfoOnComponent(2, f"d{field_name}/dz")
             grad_field.setArray(grad_array)
             grad_field.checkConsistencyLight()
             
@@ -1246,9 +1262,17 @@ def _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name):
     field_grad_p0.setMesh(umesh)
     field_grad_p0.setTime(0.0, 0, 0)
 
-    field_array_grad_p0 = mc.DataArrayDouble(grad_cells_reordered)
+    # Pad gradients to 3 components for 2D meshes
+    if mesh.vertices.shape[1] == 2:
+        grad_cells_reordered_padded = np.column_stack([grad_cells_reordered, np.zeros(len(grad_cells_reordered))])
+    else:
+        grad_cells_reordered_padded = grad_cells_reordered
+
+    field_array_grad_p0 = mc.DataArrayDouble(grad_cells_reordered_padded)
     field_array_grad_p0.setInfoOnComponent(0, "d" + field_name + "/dx")
     field_array_grad_p0.setInfoOnComponent(1, "d" + field_name + "/dy")
+    if grad_cells_reordered_padded.shape[1] > 2:
+        field_array_grad_p0.setInfoOnComponent(2, "d" + field_name + "/dz")
     field_grad_p0.setArray(field_array_grad_p0)
     field_grad_p0.checkConsistencyLight()
 
@@ -1269,9 +1293,17 @@ def _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name):
     field_grad_p1.setMesh(umesh)
     field_grad_p1.setTime(0.0, 0, 0)
 
-    field_array_grad_p1 = mc.DataArrayDouble(grad_vertices)
+    # Pad gradients to 3 components for 2D meshes
+    if mesh.vertices.shape[1] == 2:
+        grad_vertices_padded = np.column_stack([grad_vertices, np.zeros(len(grad_vertices))])
+    else:
+        grad_vertices_padded = grad_vertices
+
+    field_array_grad_p1 = mc.DataArrayDouble(grad_vertices_padded)
     field_array_grad_p1.setInfoOnComponent(0, "d" + field_name + "/dx")
     field_array_grad_p1.setInfoOnComponent(1, "d" + field_name + "/dy")
+    if grad_vertices_padded.shape[1] > 2:
+        field_array_grad_p1.setInfoOnComponent(2, "d" + field_name + "/dz")
     field_grad_p1.setArray(field_array_grad_p1)
     field_grad_p1.checkConsistencyLight()
 
