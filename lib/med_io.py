@@ -483,12 +483,11 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_cells, n_components))
     
-    # Compute gradients once if needed
-    compute_any_gradient = any(f["gradient"] or f["gradient_magnitude"] for f in fields.values())
-    if compute_any_gradient:
-        for cell_id in range(mesh.n_cells):
-            cell_centroids[cell_id] = mesh.cell_centroid(cell_id)
-        all_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells))
+    # Compute cell centroids once
+    cell_centroids = np.zeros((mesh.n_cells, 2))
+    for cell_id in range(mesh.n_cells):
+        cell_centroids[cell_id] = mesh.cell_centroid(cell_id)
+    cell_ids = np.arange(mesh.n_cells)
     
     # Evaluate all fields at cell centroids
     for cell_id in range(mesh.n_cells):
@@ -497,14 +496,20 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
         
         for field_name, field_value in cell_fields.items():
             field_data[field_name][cell_id] = field_value
-        
-        # Store gradient if needed
-        if compute_any_gradient:
-            for field_name, field_spec in fields.items():
-                if field_spec["gradient"]:
-                    grad_data[field_name][cell_id] = all_gradients[cell_id]
-                if field_spec["gradient_magnitude"]:
-                    grad_mag_data[field_name][cell_id] = np.linalg.norm(all_gradients[cell_id])
+    
+    # Compute gradients per field with proper component extraction
+    for field_name, field_spec in fields.items():
+        if field_spec["gradient"] or field_spec["gradient_magnitude"]:
+            # For multi-component solutions, extract the component
+            # Components are the indices in the solver output (e.g., [0,1] for velocity, [2] for pressure in Stokes)
+            component_idx = field_spec["components"][0]  # Use first component for scalar gradient
+            
+            grad_vals = _compute_gradients_numerical(solver, u_dofs, cell_centroids, cell_ids, component=component_idx)
+            
+            if field_spec["gradient"]:
+                grad_data[field_name] = grad_vals
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] = np.linalg.norm(grad_vals, axis=1)
     
     # Write all cell fields to MED file
     for field_name, field_spec in fields.items():
@@ -522,9 +527,22 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             field_array.setInfoOnComponent(0, field_name)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
-            field_array = mc.DataArrayDouble(field_reordered.ravel().tolist(), len(field_reordered), n_components)
+            # Pad 2D vectors to 3D by adding zero z-component (match VTK convention)
+            if n_components == 2:
+                field_padded = np.column_stack([field_reordered, np.zeros(len(field_reordered))])
+                n_components_out = 3
+            else:
+                field_padded = field_reordered
+                n_components_out = n_components
+            
+            field_array = mc.DataArrayDouble(field_padded.ravel().tolist(), len(field_padded), n_components_out)
+            # Set component info
+            comp_names = ['x', 'y', 'z']
             for i, comp_idx in enumerate(field_spec["components"]):
-                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+                field_array.setInfoOnComponent(i, f"{field_name}_{comp_names[i]}")
+            # If padded, set z-component info
+            if n_components == 2:
+                field_array.setInfoOnComponent(2, f"{field_name}_z")
         
         field.setArray(field_array)
         field.checkConsistencyLight()
@@ -615,14 +633,6 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
     
     # Interpolate to vertices using averaging from adjacent cells
-    compute_any_gradient = any(f["gradient"] or f["gradient_magnitude"] for f in fields.values())
-    cell_gradients = None
-    
-    if compute_any_gradient:
-        # Pre-compute gradients at cell centroids
-        cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
-        cell_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells))
-    
     for cell_id, cell in enumerate(mesh.cells):
         for vertex_id in cell:
             vertex_pos = mesh.vertices[vertex_id]
@@ -631,28 +641,42 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             for field_name, field_value in vertex_fields.items():
                 field_data[field_name][vertex_id] += field_value
             
-            # Accumulate gradients
-            if compute_any_gradient:
-                for field_name, field_spec in fields.items():
-                    if field_spec["gradient"]:
-                        grad_data[field_name][vertex_id] += cell_gradients[cell_id]
-                    if field_spec["gradient_magnitude"]:
-                        grad_mag_data[field_name][vertex_id] += np.linalg.norm(cell_gradients[cell_id])
-            
             vertex_count[vertex_id] += 1
     
     # Average values at vertices shared by multiple cells
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] /= np.maximum(vertex_count, 1)
-            if field_spec["gradient"]:
-                grad_data[field_name] /= np.maximum(vertex_count[:, np.newaxis], 1)
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] /= np.maximum(vertex_count, 1)
         elif field_spec["type"] == "vector":
             for i in range(mesh.n_vertices):
                 if vertex_count[i] > 0:
                     field_data[field_name][i] /= vertex_count[i]
+    
+    # Compute gradients per field with proper component extraction
+    cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
+    for field_name, field_spec in fields.items():
+        if field_spec["gradient"] or field_spec["gradient_magnitude"]:
+            # For multi-component solutions, extract the component
+            component_idx = field_spec["components"][0]
+            
+            cell_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells), component=component_idx)
+            
+            # Average cell gradients to vertices
+            vertex_gradients = np.zeros((mesh.n_vertices, 2))
+            vertex_grad_count = np.zeros(mesh.n_vertices)
+            
+            for cell_id, cell in enumerate(mesh.cells):
+                for vertex_id in cell:
+                    vertex_gradients[vertex_id] += cell_gradients[cell_id]
+                    vertex_grad_count[vertex_id] += 1
+            
+            # Average and store
+            if field_spec["gradient"]:
+                grad_data[field_name] = vertex_gradients / np.maximum(vertex_grad_count[:, np.newaxis], 1)
+            if field_spec["gradient_magnitude"]:
+                grad_mag_data[field_name] = np.linalg.norm(vertex_gradients / np.maximum(vertex_grad_count[:, np.newaxis], 1), axis=1)
     
     # Write all node fields to MED file
     for field_name, field_spec in fields.items():
@@ -667,9 +691,22 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             field_array.setInfoOnComponent(0, field_name)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
-            field_array = mc.DataArrayDouble(field_data[field_name].ravel().tolist(), len(field_data[field_name]), n_components)
+            # Pad 2D vectors to 3D by adding zero z-component (match VTK convention)
+            if n_components == 2:
+                field_padded = np.column_stack([field_data[field_name], np.zeros(len(field_data[field_name]))])
+                n_components_out = 3
+            else:
+                field_padded = field_data[field_name]
+                n_components_out = n_components
+            
+            field_array = mc.DataArrayDouble(field_padded.ravel().tolist(), len(field_padded), n_components_out)
+            # Set component info
+            comp_names = ['x', 'y', 'z']
             for i, comp_idx in enumerate(field_spec["components"]):
-                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+                field_array.setInfoOnComponent(i, f"{field_name}_{comp_names[i]}")
+            # If padded, set z-component info
+            if n_components == 2:
+                field_array.setInfoOnComponent(2, f"{field_name}_z")
         
         field.setArray(field_array)
         field.checkConsistencyLight()
@@ -821,10 +858,23 @@ def _export_med_p0_multi(solver, u_dofs, filename, fields):
             field_array.setInfoOnComponent(0, field_name)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
+            # Pad 2D vectors to 3D by adding zero z-component (match VTK convention)
+            if n_components == 2:
+                field_padded = np.column_stack([field_reordered, np.zeros(len(field_reordered))])
+                n_components_out = 3
+            else:
+                field_padded = field_reordered
+                n_components_out = n_components
+            
             # Use MEDCoupling's constructor with (data, num_tuples, num_components)
-            field_array = mc.DataArrayDouble(field_reordered.ravel().tolist(), len(field_reordered), n_components)
+            field_array = mc.DataArrayDouble(field_padded.ravel().tolist(), len(field_padded), n_components_out)
+            # Set component info
+            comp_names = ['x', 'y', 'z']
             for i, comp_idx in enumerate(field_spec["components"]):
-                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+                field_array.setInfoOnComponent(i, f"{field_name}_{comp_names[i]}")
+            # If padded, set z-component info
+            if n_components == 2:
+                field_array.setInfoOnComponent(2, f"{field_name}_z")
         
         field.setArray(field_array)
         field.checkConsistencyLight()
@@ -945,10 +995,23 @@ def _export_med_p1_vertex_multi(solver, u_dofs, filename, fields):
             field_array.setInfoOnComponent(0, field_name)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
+            # Pad 2D vectors to 3D by adding zero z-component (match VTK convention)
+            if n_components == 2:
+                field_padded = np.column_stack([field_data[field_name], np.zeros(len(field_data[field_name]))])
+                n_components_out = 3
+            else:
+                field_padded = field_data[field_name]
+                n_components_out = n_components
+            
             # Use MEDCoupling's constructor with (data, num_tuples, num_components)
-            field_array = mc.DataArrayDouble(field_data[field_name].ravel().tolist(), len(field_data[field_name]), n_components)
+            field_array = mc.DataArrayDouble(field_padded.ravel().tolist(), len(field_padded), n_components_out)
+            # Set component info
+            comp_names = ['x', 'y', 'z']
             for i, comp_idx in enumerate(field_spec["components"]):
-                field_array.setInfoOnComponent(i, f"{field_name}_{i}")
+                field_array.setInfoOnComponent(i, f"{field_name}_{comp_names[i]}")
+            # If padded, set z-component info
+            if n_components == 2:
+                field_array.setInfoOnComponent(2, f"{field_name}_z")
         
         field.setArray(field_array)
         field.checkConsistencyLight()
@@ -1102,7 +1165,7 @@ def _export_med_p0(solver, u_dofs, filename, field_name):
     fields = {field_name: {"type": "scalar", "components": [0]}}
     _export_med_p0_multi(solver, u_dofs, filename, fields)
 
-def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, delta=1e-6):
+def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, component=None, delta=1e-6):
     """
     Compute gradients numerically using finite differences.
     
@@ -1115,6 +1178,9 @@ def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, delta=1e-6):
         Points at which to evaluate gradients
     cell_ids : array of shape (n,)
         Cell IDs for each point
+    component : int, optional
+        Component index to extract from multi-component solution (e.g., pressure=2 in Stokes)
+        If None, assumes scalar solution
     delta : float
         Step size for finite differences
     
@@ -1135,6 +1201,17 @@ def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, delta=1e-6):
         u_x_minus = solver.evaluate_solution(u_dofs, np.array([x - delta, y]), cell_id)
         u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
         u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
+        
+        # Extract component if multi-component solution
+        if component is not None:
+            if isinstance(u_x_plus, tuple):
+                u_x_plus = u_x_plus[component]
+            if isinstance(u_x_minus, tuple):
+                u_x_minus = u_x_minus[component]
+            if isinstance(u_y_plus, tuple):
+                u_y_plus = u_y_plus[component]
+            if isinstance(u_y_minus, tuple):
+                u_y_minus = u_y_minus[component]
         
         # Compute derivatives
         du_dx = (u_x_plus - u_x_minus) / (2 * delta)
