@@ -15,7 +15,8 @@ from stokes_DG import *
 if __name__ == "__main__":
 
     # 1. Define the mesh of the domain and associated boundary conditions manager
-    mesh = polygonal_mesh.create_square_mesh(n=10)
+    # mesh = polygonal_mesh.create_square_mesh(n=10)
+    mesh = med_io.load_med_mesh_mc("./../poisson/mesh/square_poly.med")
     bc_manager = boundary_conditions.BoundaryConditionManager(mesh)
 
     # Alternatively, load from MED file with groups 
