@@ -30,7 +30,7 @@ git clone https://github.com/mohd-afeef-badri/panda.git
 
 ### 2. Download MedCoupling
 
-Download a [**MedCoupling binary distribution**](https://www.salome-platform.org/?page_id=2430) (standalone or via SALOME) compatible with your system.
+Download a [**MedCoupling binary distribution**](https://www.salome-platform.org/?page_id=2430) (standalone or via SALOME) compatible with your system. Simply untar/unzip at `your/MEDCOUPLING_INSTALL_LOCATION`
 
 ---
 
@@ -41,7 +41,7 @@ Before running PANDA, you must initialize the SALOME/MedCoupling environment.
 ### 1. Load the MedCoupling environment
 
 ```bash
-./salome context
+source /your/MEDCOUPLING_INSTALL_LOCATION/env_launch.sh
 ```
 
 ### 2. Run an example solver
