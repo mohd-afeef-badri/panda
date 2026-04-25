@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import numpy as np
-from .med_io import load_med_mesh_mc
+from .med_io import load_med_mesh_mc, _project_cell_data_to_nodes
 
 
 def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
@@ -26,7 +26,8 @@ def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
                 "components": [indices],
                 "projection": "cell"|"nodes",  # "cell" or "nodes" (default: "cell")
                 "gradient": bool,              # compute gradient (default: False, scalars only)
-                "gradient_magnitude": bool     # compute gradient magnitude (default: False, scalars only)
+                "gradient_magnitude": bool,    # compute gradient magnitude (default: False, scalars only)
+                "zz_estimator": bool           # compute ZZ error estimator (default: False)
             }
         }
         
@@ -48,6 +49,14 @@ def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
                 "gradient_magnitude": True
             }
         }
+        - With ZZ estimator: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "cell",
+                "zz_estimator": True
+            }
+        }
     """
     if fields is None:
         raise ValueError("fields parameter is required")
@@ -62,6 +71,8 @@ def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
             field_spec["gradient"] = False
         if "gradient_magnitude" not in field_spec:
             field_spec["gradient_magnitude"] = False
+        if "zz_estimator" not in field_spec:
+            field_spec["zz_estimator"] = False
     
     # Export based on projections
     _export_vtk_multi(solver, u_dofs, filename, fields)
@@ -157,6 +168,66 @@ def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, delta=1e-
     return gradients
 
 
+def _compute_zz_estimator(solver, u_dofs, component=0):
+    """
+    Compute the Zienkiewicz-Zhu (ZZ) error estimator on cells.
+    
+    The ZZ estimator is based on recovering a superconvergent gradient by
+    L2-projection of element gradients onto nodes, then computing the error
+    as the difference between the element gradient and the recovered gradient.
+    This function computes the estimator as a cell-based quantity.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver with mesh and evaluate_solution method
+    u_dofs : array
+        Solution degrees of freedom
+    component : int, optional
+        Component index for scalar fields (default: 0)
+    
+    Returns:
+    --------
+    zz_error : array of shape (n_cells,)
+        ZZ error estimator at each cell (||∇_h u - ∇* u||^2)
+    """
+    mesh = solver.mesh
+    
+    # Step 1: Compute element gradients at cell centroids
+    cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
+    cell_ids = np.arange(mesh.n_cells)
+    
+    # Get gradients at cell centroids (element gradients)
+    grad_element = _compute_gradients_numerical_vtk(solver, u_dofs, cell_centroids, cell_ids)
+    # grad_element shape: (n_cells, 2)
+    
+    # Step 2: Project element gradients to vertices (L2 projection / averaging)
+    # This gives us the "recovered" or "smoothed" gradient
+    grad_recovered_vertices = np.zeros((mesh.n_vertices, 2))
+    vertex_count = np.zeros(mesh.n_vertices)
+    
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            grad_recovered_vertices[vertex_id] += grad_element[cell_id]
+            vertex_count[vertex_id] += 1
+    
+    # Average gradients at vertices shared by multiple cells
+    grad_recovered_vertices /= np.maximum(vertex_count[:, np.newaxis], 1)
+    
+    # Step 3: Compute error estimator as ||∇_h - ∇*||^2 per cell
+    # Average recovered gradient over cell vertices, then compute L2 error
+    zz_error = np.zeros(mesh.n_cells)
+    
+    for cell_id, cell in enumerate(mesh.cells):
+        # Average recovered gradient over vertices of this cell
+        grad_recovered_cell = np.mean(grad_recovered_vertices[cell], axis=0)
+        # Error: ||∇_h - ∇*||^2
+        grad_diff = grad_element[cell_id] - grad_recovered_cell
+        zz_error[cell_id] = np.sum(grad_diff**2)
+    
+    return zz_error
+
+
 def _evaluate_fields_at_point(solver, u_dofs, point, cell_id, fields):
     """
     Evaluate all fields at a given point.
@@ -202,6 +273,7 @@ def _export_vtk_p0(solver, u_dofs, filename, fields):
     field_data = {}
     grad_data = {}
     grad_mag_data = {}
+    zz_estimator_data = {}
     cell_centroids = np.zeros((mesh.n_cells, 2))
     
     for field_name, field_spec in fields.items():
@@ -211,12 +283,14 @@ def _export_vtk_p0(solver, u_dofs, filename, fields):
                 grad_data[field_name] = np.zeros((mesh.n_cells, 2))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_cells)
+            if field_spec["zz_estimator"]:
+                zz_estimator_data[field_name] = np.zeros(mesh.n_cells)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_cells, n_components))
     
     # Compute gradients once if needed
-    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False) 
+    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False) or f.get("zz_estimator", False)
                                for f in fields.values() if f["type"] == "scalar")
     if compute_any_gradient:
         for cell_id in range(mesh.n_cells):
@@ -241,8 +315,14 @@ def _export_vtk_p0(solver, u_dofs, filename, fields):
                     if field_spec.get("gradient_magnitude", False):
                         grad_mag_data[field_name][cell_id] = np.linalg.norm(all_gradients[cell_id])
     
-    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data, 
-                    data_location="CELL")
+    # Compute ZZ estimator if needed
+    for field_name, field_spec in fields.items():
+        if field_spec.get("zz_estimator", False) and field_name in zz_estimator_data:
+            component_idx = field_spec["components"][0]  # Use first component for scalar
+            zz_estimator_data[field_name] = _compute_zz_estimator(solver, u_dofs, component=component_idx)
+    
+    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data,
+                    zz_estimator_data, data_location="CELL")
     print(f"P0 projection exported to: {filename}")
 
 
@@ -254,6 +334,7 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
     field_data = {}
     grad_data = {}
     grad_mag_data = {}
+    zz_estimator_data = {}
     vertex_count = np.zeros(mesh.n_vertices)
     
     for field_name, field_spec in fields.items():
@@ -263,12 +344,14 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
                 grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
             if field_spec.get("gradient_magnitude", False):
                 grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
+            if field_spec.get("zz_estimator", False):
+                zz_estimator_data[field_name] = np.zeros(mesh.n_cells)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
     
     # Compute cell gradients once if needed
-    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False)
+    compute_any_gradient = any(f.get("gradient", False) or f.get("gradient_magnitude", False) or f.get("zz_estimator", False)
                                for f in fields.values() if f["type"] == "scalar")
     cell_gradients = None
     
@@ -297,6 +380,14 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
             
             vertex_count[vertex_id] += 1
     
+    # Compute ZZ estimator if needed
+    for field_name, field_spec in fields.items():
+        if field_spec.get("zz_estimator", False) and field_name in zz_estimator_data:
+            component_idx = field_spec["components"][0]  # Use first component for scalar
+            # Compute ZZ error estimator on cells, then project to nodes
+            zz_cell_data = _compute_zz_estimator(solver, u_dofs, component=component_idx)
+            zz_estimator_data[field_name] = _project_cell_data_to_nodes(zz_cell_data, mesh)
+    
     # Average values at vertices shared by multiple cells
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
@@ -310,15 +401,15 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
                 if vertex_count[i] > 0:
                     field_data[field_name][i] /= vertex_count[i]
     
-    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data, 
-                    data_location="POINT")
+    _write_vtk_file(mesh, filename, fields, field_data, grad_data, grad_mag_data,
+                    zz_estimator_data, data_location="POINT")
     print(f"P1 vertex interpolation exported to: {filename}")
 
 
-def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag_data=None, 
-                    data_location="POINT"):
+def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag_data=None,
+                    zz_estimator_data=None, data_location="POINT"):
     """
-    Write VTK file with mesh and field data, including optional gradients.
+    Write VTK file with mesh and field data, including optional gradients and ZZ estimator.
     
     Parameters:
     -----------
@@ -332,6 +423,8 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
         {field_name: gradient_values_array} for scalar fields with gradients
     grad_mag_data : dict, optional
         {field_name: gradient_magnitude_values_array} for scalar fields with gradient_magnitude
+    zz_estimator_data : dict, optional
+        {field_name: zz_estimator_values_array} for scalar fields with ZZ estimator
     data_location : str
         "POINT" or "CELL"
     """
@@ -339,6 +432,8 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
         grad_data = {}
     if grad_mag_data is None:
         grad_mag_data = {}
+    if zz_estimator_data is None:
+        zz_estimator_data = {}
         
     output_path = Path(filename)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -416,6 +511,14 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
             f.write(f"SCALARS {field_name}_gradient_magnitude double 1\n")
             f.write("LOOKUP_TABLE default\n")
             for val in mag:
+                f.write(f"{val}\n")
+        
+        # Write ZZ estimator fields if present
+        for field_name in zz_estimator_data:
+            zz = zz_estimator_data[field_name]
+            f.write(f"SCALARS zz_estimator_{field_name} double 1\n")
+            f.write("LOOKUP_TABLE default\n")
+            for val in zz:
                 f.write(f"{val}\n")
 
 
