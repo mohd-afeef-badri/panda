@@ -237,6 +237,100 @@ def extract_edge_groups_from_med(filename, mesh_name=None):
     
     return edge_groups
 
+def _compute_zz_estimator(solver, u_dofs, component=0, projection="cell"):
+    """
+    Compute the Zienkiewicz-Zhu (ZZ) error estimator.
+    
+    The ZZ estimator is based on recovering a superconvergent gradient by
+    L2-projection of element gradients onto nodes, then computing the error
+    as the difference between the element gradient and the recovered gradient.
+    
+    Parameters:
+    -----------
+    solver : Solver object
+        The solver with mesh and evaluate_solution method
+    u_dofs : array
+        Solution degrees of freedom
+    component : int, optional
+        Component index for scalar fields (default: 0)
+    projection : str, optional
+        Where to compute the estimator: "cell" (cell-based) or "nodes" (node-based)
+        (default: "cell")
+    
+    Returns:
+    --------
+    If projection == "cell":
+        zz_error : array of shape (n_cells,)
+            ZZ error estimator at each cell (||∇_h u - ∇* u||^2 where ∇_h is element grad)
+    
+    If projection == "nodes":
+        zz_error : array of shape (n_vertices,)
+            ZZ error estimator at each node (recovered from cell values)
+    """
+    mesh = solver.mesh
+    
+    # Step 1: Compute element gradients at cell centroids
+    cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
+    cell_ids = np.arange(mesh.n_cells)
+    
+    # Get gradients at cell centroids (element gradients)
+    grad_element = _compute_gradients_numerical(solver, u_dofs, cell_centroids, cell_ids, component=component)
+    # grad_element shape: (n_cells, 2)
+    
+    # Step 2: Project element gradients to vertices (L2 projection / averaging)
+    # This gives us the "recovered" or "smoothed" gradient
+    grad_recovered_vertices = np.zeros((mesh.n_vertices, 2))
+    vertex_count = np.zeros(mesh.n_vertices)
+    
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            grad_recovered_vertices[vertex_id] += grad_element[cell_id]
+            vertex_count[vertex_id] += 1
+    
+    # Average gradients at vertices shared by multiple cells
+    grad_recovered_vertices /= np.maximum(vertex_count[:, np.newaxis], 1)
+    
+    # Step 3: Compute error estimator as ||∇_h - ∇*||^2
+    # We compute this either per cell (averaging recovered gradient over cell) 
+    # or per vertex (using recovered gradient at vertex)
+    
+    if projection == "cell":
+        # Error estimator as cell values: average recovered gradient over cell,
+        # then compute L2 error against element gradient
+        zz_error = np.zeros(mesh.n_cells)
+        
+        for cell_id, cell in enumerate(mesh.cells):
+            # Average recovered gradient over vertices of this cell
+            grad_recovered_cell = np.mean(grad_recovered_vertices[cell], axis=0)
+            
+            # Compute error: ||grad_element - grad_recovered||^2
+            grad_diff = grad_element[cell_id] - grad_recovered_cell
+            zz_error[cell_id] = np.dot(grad_diff, grad_diff)  # squared L2 norm
+        
+        return zz_error
+    
+    elif projection == "nodes":
+        # Error estimator as node values: use differences from adjacent element gradients
+        zz_error = np.zeros(mesh.n_vertices)
+        vertex_squared_diff = np.zeros(mesh.n_vertices)
+        vertex_count_for_error = np.zeros(mesh.n_vertices)
+        
+        for cell_id, cell in enumerate(mesh.cells):
+            for vertex_id in cell:
+                # Compute error at this vertex from this cell's perspective
+                grad_diff = grad_element[cell_id] - grad_recovered_vertices[vertex_id]
+                squared_error = np.dot(grad_diff, grad_diff)
+                
+                vertex_squared_diff[vertex_id] += squared_error
+                vertex_count_for_error[vertex_id] += 1
+        
+        # Average squared errors at vertices
+        zz_error = vertex_squared_diff / np.maximum(vertex_count_for_error, 1)
+        
+        return zz_error
+    
+    else:
+        raise ValueError(f"Unknown projection type: {projection}. Use 'cell' or 'nodes'.")
 
 def _evaluate_fields_at_point_med(solver, u_dofs, point, cell_id, fields):
     """
@@ -308,7 +402,8 @@ def export_solution(solver, u_dofs, filename="solution.med", fields=None):
                 "components": [indices],
                 "projection": "cell"|"nodes",  # "cell" or "nodes" (default: "cell")
                 "gradient": bool,              # compute gradient (default: False)
-                "gradient_magnitude": bool     # compute gradient magnitude (default: False)
+                "gradient_magnitude": bool,    # compute gradient magnitude (default: False)
+                "zz_estimator": bool           # compute ZZ error estimator (default: False)
             }
         }
         
@@ -319,6 +414,14 @@ def export_solution(solver, u_dofs, filename="solution.med", fields=None):
                 "type": "scalar",
                 "components": [0],
                 "projection": "cell"
+            }
+        }
+        - With ZZ estimator: fields={
+            "u": {
+                "type": "scalar",
+                "components": [0],
+                "projection": "cell",
+                "zz_estimator": True
             }
         }
         - With gradients: fields={
@@ -340,7 +443,8 @@ def export_solution(solver, u_dofs, filename="solution.med", fields=None):
                 "type": "scalar",
                 "components": [2],
                 "projection": "cell",
-                "gradient": True
+                "gradient": True,
+                "zz_estimator": True
             }
         }
     """
@@ -361,7 +465,9 @@ def export_solution(solver, u_dofs, filename="solution.med", fields=None):
             field_spec["gradient"] = False
         if "gradient_magnitude" not in field_spec:
             field_spec["gradient_magnitude"] = False
-    
+        if "zz_estimator" not in field_spec:
+            field_spec["zz_estimator"] = False
+ 
     # Separate fields by projection type and export
     _export_med_multi(solver, u_dofs, filename, fields)
 
@@ -470,6 +576,7 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
     field_data = {}
     grad_data = {}
     grad_mag_data = {}
+    zz_estimator_data = {}
     cell_centroids = np.zeros((mesh.n_cells, 2))
     
     for field_name, field_spec in fields.items():
@@ -479,6 +586,8 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
                 grad_data[field_name] = np.zeros((mesh.n_cells, 2))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_cells)
+            if field_spec["zz_estimator"]:
+                zz_estimator_data[field_name] = np.zeros(mesh.n_cells)
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_cells, n_components))
@@ -499,7 +608,7 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
     
     # Compute gradients per field with proper component extraction
     for field_name, field_spec in fields.items():
-        if field_spec["gradient"] or field_spec["gradient_magnitude"]:
+        if field_spec["gradient"] or field_spec["gradient_magnitude"] or field_spec["zz_estimator"]:
             # For multi-component solutions, extract the component
             # Components are the indices in the solver output (e.g., [0,1] for velocity, [2] for pressure in Stokes)
             component_idx = field_spec["components"][0]  # Use first component for scalar gradient
@@ -510,7 +619,12 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
                 grad_data[field_name] = grad_vals
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.linalg.norm(grad_vals, axis=1)
-    
+            if field_spec["zz_estimator"]:
+                # Compute ZZ error estimator for this scalar field
+                zz_estimator_data[field_name] = _compute_zz_estimator(
+                        solver, u_dofs, component=component_idx, projection="cell"
+                    )
+   
     # Write all cell fields to MED file
     for field_name, field_spec in fields.items():
         # Reorder field values according to cell_mapping
@@ -593,7 +707,25 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             mag_writer = mc.MEDFileField1TS()
             mag_writer.setFieldNoProfileSBT(mag_field)
             mag_writer.write(filename, 0)
-    
+
+        
+        # Write ZZ estimator if requested
+        if field_spec["zz_estimator"] and field_name in zz_estimator_data:
+            zz_reordered = zz_estimator_data[field_name][cell_mapping]
+            zz_field = mc.MEDCouplingFieldDouble(mc.ON_CELLS, mc.ONE_TIME)
+            zz_field.setName(f"zz_estimator_{field_name}")
+            zz_field.setMesh(umesh)
+            zz_field.setTime(0.0, 0, 0)
+            
+            zz_array = mc.DataArrayDouble(zz_reordered)
+            zz_array.setInfoOnComponent(0, f"ZZ estimator {field_name}")
+            zz_field.setArray(zz_array)
+            zz_field.checkConsistencyLight()
+            
+            zz_writer = mc.MEDFileField1TS()
+            zz_writer.setFieldNoProfileSBT(zz_field)
+            zz_writer.write(filename, 0)
+
     print(f"Cell-projected fields exported to MED: {filename}")
 
 
@@ -619,6 +751,7 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
     field_data = {}
     grad_data = {}
     grad_mag_data = {}
+    zz_estimator_data = {}
     vertex_count = np.zeros(mesh.n_vertices)
     
     for field_name, field_spec in fields.items():
@@ -628,9 +761,14 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
                 grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
+            if field_spec["zz_estimator"]:
+                zz_estimator_data[field_name] = np.zeros(mesh.n_vertices)
+
         elif field_spec["type"] == "vector":
             n_components = len(field_spec["components"])
             field_data[field_name] = np.zeros((mesh.n_vertices, n_components))
+            if field_spec["zz_estimator"]:
+                zz_estimator_data[field_name] = np.zeros(mesh.n_vertices)
     
     # Interpolate to vertices using averaging from adjacent cells
     for cell_id, cell in enumerate(mesh.cells):
@@ -657,7 +795,7 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
     # Compute gradients per field with proper component extraction
     cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
     for field_name, field_spec in fields.items():
-        if field_spec["gradient"] or field_spec["gradient_magnitude"]:
+        if field_spec["gradient"] or field_spec["gradient_magnitude"] or field_spec["zz_estimator"]:
             # For multi-component solutions, extract the component
             component_idx = field_spec["components"][0]
             
@@ -677,6 +815,11 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
                 grad_data[field_name] = vertex_gradients / np.maximum(vertex_grad_count[:, np.newaxis], 1)
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.linalg.norm(vertex_gradients / np.maximum(vertex_grad_count[:, np.newaxis], 1), axis=1)
+            if field_spec["zz_estimator"]:
+                # Compute ZZ error estimator for this scalar field
+                zz_estimator_data[field_name] = _compute_zz_estimator(
+                    solver, u_dofs, component=component_idx, projection="nodes"
+                )
     
     # Write all node fields to MED file
     for field_name, field_spec in fields.items():
@@ -755,7 +898,24 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             mag_writer = mc.MEDFileField1TS()
             mag_writer.setFieldNoProfileSBT(mag_field)
             mag_writer.write(filename, 0)
-    
+
+        
+        # Write ZZ estimator if requested
+        if field_spec["zz_estimator"] and field_name in zz_estimator_data:
+            zz_field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+            zz_field.setName(f"zz_estimator_{field_name}")
+            zz_field.setMesh(umesh)
+            zz_field.setTime(0.0, 0, 0)
+            
+            zz_array = mc.DataArrayDouble(zz_estimator_data[field_name])
+            zz_array.setInfoOnComponent(0, f"ZZ estimator {field_name}")
+            zz_field.setArray(zz_array)
+            zz_field.checkConsistencyLight()
+            
+            zz_writer = mc.MEDFileField1TS()
+            zz_writer.setFieldNoProfileSBT(zz_field)
+            zz_writer.write(filename, 0)
+
     print(f"Node-projected fields exported to MED: {filename}")
 
 
