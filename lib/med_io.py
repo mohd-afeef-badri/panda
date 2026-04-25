@@ -237,13 +237,43 @@ def extract_edge_groups_from_med(filename, mesh_name=None):
     
     return edge_groups
 
-def _compute_zz_estimator(solver, u_dofs, component=0, projection="cell"):
+def _project_cell_data_to_nodes(cell_data, mesh):
     """
-    Compute the Zienkiewicz-Zhu (ZZ) error estimator.
+    Project cell-based data to nodes using simple averaging.
+    
+    Parameters:
+    -----------
+    cell_data : array of shape (n_cells,)
+        Data at cell centers
+    mesh : PolygonalMesh
+        The mesh object
+    
+    Returns:
+    --------
+    node_data : array of shape (n_vertices,)
+        Data interpolated to nodes
+    """
+    node_data = np.zeros(mesh.n_vertices)
+    node_count = np.zeros(mesh.n_vertices)
+    
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            node_data[vertex_id] += cell_data[cell_id]
+            node_count[vertex_id] += 1
+    
+    # Average values at vertices shared by multiple cells
+    node_data /= np.maximum(node_count, 1)
+    
+    return node_data
+
+def _compute_zz_estimator(solver, u_dofs, component=0):
+    """
+    Compute the Zienkiewicz-Zhu (ZZ) error estimator on cells.
     
     The ZZ estimator is based on recovering a superconvergent gradient by
     L2-projection of element gradients onto nodes, then computing the error
     as the difference between the element gradient and the recovered gradient.
+    This function computes the estimator as a cell-based quantity.
     
     Parameters:
     -----------
@@ -253,19 +283,11 @@ def _compute_zz_estimator(solver, u_dofs, component=0, projection="cell"):
         Solution degrees of freedom
     component : int, optional
         Component index for scalar fields (default: 0)
-    projection : str, optional
-        Where to compute the estimator: "cell" (cell-based) or "nodes" (node-based)
-        (default: "cell")
     
     Returns:
     --------
-    If projection == "cell":
-        zz_error : array of shape (n_cells,)
-            ZZ error estimator at each cell (||∇_h u - ∇* u||^2 where ∇_h is element grad)
-    
-    If projection == "nodes":
-        zz_error : array of shape (n_vertices,)
-            ZZ error estimator at each node (recovered from cell values)
+    zz_error : array of shape (n_cells,)
+        ZZ error estimator at each cell (||∇_h u - ∇* u||^2)
     """
     mesh = solver.mesh
     
@@ -290,47 +312,19 @@ def _compute_zz_estimator(solver, u_dofs, component=0, projection="cell"):
     # Average gradients at vertices shared by multiple cells
     grad_recovered_vertices /= np.maximum(vertex_count[:, np.newaxis], 1)
     
-    # Step 3: Compute error estimator as ||∇_h - ∇*||^2
-    # We compute this either per cell (averaging recovered gradient over cell) 
-    # or per vertex (using recovered gradient at vertex)
+    # Step 3: Compute error estimator as ||∇_h - ∇*||^2 per cell
+    # Average recovered gradient over cell vertices, then compute L2 error
+    zz_error = np.zeros(mesh.n_cells)
     
-    if projection == "cell":
-        # Error estimator as cell values: average recovered gradient over cell,
-        # then compute L2 error against element gradient
-        zz_error = np.zeros(mesh.n_cells)
+    for cell_id, cell in enumerate(mesh.cells):
+        # Average recovered gradient over vertices of this cell
+        grad_recovered_cell = np.mean(grad_recovered_vertices[cell], axis=0)
         
-        for cell_id, cell in enumerate(mesh.cells):
-            # Average recovered gradient over vertices of this cell
-            grad_recovered_cell = np.mean(grad_recovered_vertices[cell], axis=0)
-            
-            # Compute error: ||grad_element - grad_recovered||^2
-            grad_diff = grad_element[cell_id] - grad_recovered_cell
-            zz_error[cell_id] = np.dot(grad_diff, grad_diff)  # squared L2 norm
-        
-        return zz_error
+        # Compute error: ||grad_element - grad_recovered||^2
+        grad_diff = grad_element[cell_id] - grad_recovered_cell
+        zz_error[cell_id] = np.dot(grad_diff, grad_diff)  # squared L2 norm
     
-    elif projection == "nodes":
-        # Error estimator as node values: use differences from adjacent element gradients
-        zz_error = np.zeros(mesh.n_vertices)
-        vertex_squared_diff = np.zeros(mesh.n_vertices)
-        vertex_count_for_error = np.zeros(mesh.n_vertices)
-        
-        for cell_id, cell in enumerate(mesh.cells):
-            for vertex_id in cell:
-                # Compute error at this vertex from this cell's perspective
-                grad_diff = grad_element[cell_id] - grad_recovered_vertices[vertex_id]
-                squared_error = np.dot(grad_diff, grad_diff)
-                
-                vertex_squared_diff[vertex_id] += squared_error
-                vertex_count_for_error[vertex_id] += 1
-        
-        # Average squared errors at vertices
-        zz_error = vertex_squared_diff / np.maximum(vertex_count_for_error, 1)
-        
-        return zz_error
-    
-    else:
-        raise ValueError(f"Unknown projection type: {projection}. Use 'cell' or 'nodes'.")
+    return zz_error
 
 def _evaluate_fields_at_point_med(solver, u_dofs, point, cell_id, fields):
     """
@@ -622,7 +616,7 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             if field_spec["zz_estimator"]:
                 # Compute ZZ error estimator for this scalar field
                 zz_estimator_data[field_name] = _compute_zz_estimator(
-                        solver, u_dofs, component=component_idx, projection="cell"
+                        solver, u_dofs, component=component_idx
                     )
    
     # Write all cell fields to MED file
@@ -816,10 +810,11 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.linalg.norm(vertex_gradients / np.maximum(vertex_grad_count[:, np.newaxis], 1), axis=1)
             if field_spec["zz_estimator"]:
-                # Compute ZZ error estimator for this scalar field
-                zz_estimator_data[field_name] = _compute_zz_estimator(
-                    solver, u_dofs, component=component_idx, projection="nodes"
+                # Compute ZZ error estimator on cells, then project to nodes
+                zz_cell_data = _compute_zz_estimator(
+                    solver, u_dofs, component=component_idx
                 )
+                zz_estimator_data[field_name] = _project_cell_data_to_nodes(zz_cell_data, mesh)
     
     # Write all node fields to MED file
     for field_name, field_spec in fields.items():
