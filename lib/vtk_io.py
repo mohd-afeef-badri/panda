@@ -119,7 +119,7 @@ def _export_vtk_multi(solver, u_dofs, filename, fields):
         _export_vtk_p1_vertex(solver, u_dofs, filename, node_fields)
 
 
-def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, delta=1e-6):
+def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, component=None, delta=1e-6):
     """
     Compute gradients numerically using finite differences.
     
@@ -132,6 +132,8 @@ def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, delta=1e-
         Points at which to evaluate gradients
     cell_ids : array of shape (n,)
         Cell IDs for each point
+    component : int, optional
+        Component index to extract from multi-component solution
     delta : float
         Step size for finite differences
     
@@ -152,8 +154,13 @@ def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, delta=1e-
         u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
         u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
         
-        # Handle vector results (take first component)
-        if isinstance(u_x_plus, (list, np.ndarray)):
+        # Extract requested component if multi-component solution
+        if component is not None and isinstance(u_x_plus, (tuple, list, np.ndarray)):
+            u_x_plus = u_x_plus[component]
+            u_x_minus = u_x_minus[component]
+            u_y_plus = u_y_plus[component]
+            u_y_minus = u_y_minus[component]
+        elif isinstance(u_x_plus, (tuple, list, np.ndarray)):
             u_x_plus = u_x_plus[0]
             u_x_minus = u_x_minus[0]
             u_y_plus = u_y_plus[0]
@@ -172,10 +179,9 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
     """
     Compute the Zienkiewicz-Zhu (ZZ) error estimator on cells.
     
-    The ZZ estimator is based on recovering a superconvergent gradient by
-    L2-projection of element gradients onto nodes, then computing the error
-    as the difference between the element gradient and the recovered gradient.
-    This function computes the estimator as a cell-based quantity.
+    The ZZ estimator is based on recovering a superconvergent gradient 
+    and measuring the difference between the recovered gradient and the 
+    original finite element gradient.
     
     Parameters:
     -----------
@@ -192,39 +198,31 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
         ZZ error estimator at each cell (||∇_h u - ∇* u||^2)
     """
     mesh = solver.mesh
-    
-    # Step 1: Compute element gradients at cell centroids
-    cell_centroids = np.array([mesh.cell_centroid(cid) for cid in range(mesh.n_cells)])
-    cell_ids = np.arange(mesh.n_cells)
-    
-    # Get gradients at cell centroids (element gradients)
-    grad_element = _compute_gradients_numerical_vtk(solver, u_dofs, cell_centroids, cell_ids)
-    # grad_element shape: (n_cells, 2)
-    
-    # Step 2: Project element gradients to vertices (L2 projection / averaging)
-    # This gives us the "recovered" or "smoothed" gradient
+    grad_element = _compute_gradients_numerical_vtk(
+        solver,
+        u_dofs,
+        np.array([mesh.cell_centroid(i) for i in range(mesh.n_cells)]),
+        np.arange(mesh.n_cells),
+        component=component,
+    )
+
+    # 1. Recovery with area weighting
     grad_recovered_vertices = np.zeros((mesh.n_vertices, 2))
-    vertex_count = np.zeros(mesh.n_vertices)
-    
-    for cell_id, cell in enumerate(mesh.cells):
-        for vertex_id in cell:
-            grad_recovered_vertices[vertex_id] += grad_element[cell_id]
-            vertex_count[vertex_id] += 1
-    
-    # Average gradients at vertices shared by multiple cells
-    grad_recovered_vertices /= np.maximum(vertex_count[:, np.newaxis], 1)
-    
-    # Step 3: Compute error estimator as ||∇_h - ∇*||^2 per cell
-    # Average recovered gradient over cell vertices, then compute L2 error
+    v_weights = np.zeros(mesh.n_vertices)
+    for cid, cell in enumerate(mesh.cells):
+        a = mesh.cell_area(cid)
+        for vid in cell:
+            grad_recovered_vertices[vid] += grad_element[cid] * a
+            v_weights[vid] += a
+    grad_recovered_vertices /= np.maximum(v_weights[:, None], 1e-14)
+
+    # 2. Error calculation
     zz_error = np.zeros(mesh.n_cells)
-    
-    for cell_id, cell in enumerate(mesh.cells):
-        # Average recovered gradient over vertices of this cell
-        grad_recovered_cell = np.mean(grad_recovered_vertices[cell], axis=0)
-        # Error: ||∇_h - ∇*||^2
-        grad_diff = grad_element[cell_id] - grad_recovered_cell
-        zz_error[cell_id] = np.sum(grad_diff**2)
-    
+    for cid, cell in enumerate(mesh.cells):
+        diffs = grad_recovered_vertices[cell] - grad_element[cid]
+        l2_diff_sq = np.mean(np.sum(diffs**2, axis=1))
+        zz_error[cid] = l2_diff_sq * mesh.cell_area(cid)
+
     return zz_error
 
 
