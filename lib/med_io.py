@@ -1722,7 +1722,7 @@ def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
     # Group and insert cells (keep same approach used elsewhere)
     cells_by_type = {}
     for cell_id, cell in enumerate(tria_mesh.cells):
-        cell_type = mc.NORM_POLYGON
+        cell_type = mc.NORM_TRI3
         cells_by_type.setdefault(cell_type, []).append((cell_id, cell))
 
     umesh.allocateCells(tria_mesh.n_cells)
