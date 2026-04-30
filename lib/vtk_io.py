@@ -456,14 +456,7 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
         # Cell types
         f.write(f"\nCELL_TYPES {mesh.n_cells}\n")
         for cell in mesh.cells:
-            n_nodes = len(cell)
-            if n_nodes == 3:
-                cell_type = 5  # VTK_TRIANGLE
-            elif n_nodes == 4:
-                cell_type = 9  # VTK_QUAD
-            else:
-                cell_type = 7  # VTK_POLYGON
-            f.write(f"{cell_type}\n")
+            f.write(f"7\n")
 
         # Data section header
         if data_location == "POINT":
