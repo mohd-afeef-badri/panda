@@ -498,13 +498,7 @@ def _export_med_multi(solver, u_dofs, filename, fields):
     # Group cells by type
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
+        cell_type = mc.NORM_POLYGON
         
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
@@ -950,14 +944,7 @@ def _export_med_p0_multi(solver, u_dofs, filename, fields):
     # Group cells by type for MEDCoupling contiguity requirement
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
-
+        cell_type = mc.NORM_POLYGON
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
         cells_by_type[cell_type].append((cell_id, cell))
@@ -1093,14 +1080,7 @@ def _export_med_p1_vertex_multi(solver, u_dofs, filename, fields):
     # Group cells by type for MEDCoupling contiguity requirement
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
-
+        cell_type = mc.NORM_POLYGON
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
         cells_by_type[cell_type].append((cell_id, cell))
@@ -1229,13 +1209,7 @@ def _export_med_p0_p1(solver, u_dofs, filename, field_name_p0, field_name_p1):
     # Group cells by type for MEDCoupling contiguity requirement
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
+        cell_type = mc.NORM_POLYGON
 
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
@@ -1433,13 +1407,7 @@ def _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name):
     # Group cells by type for MEDCoupling contiguity requirement
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
+        cell_type = mc.NORM_POLYGON
 
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
@@ -1622,14 +1590,7 @@ def _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name):
     # Group cells by type for MEDCoupling contiguity requirement
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
-
+        cell_type = mc.NORM_POLYGON
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
         cells_by_type[cell_type].append((cell_id, cell))
@@ -1761,14 +1722,7 @@ def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
     # Group and insert cells (keep same approach used elsewhere)
     cells_by_type = {}
     for cell_id, cell in enumerate(tria_mesh.cells):
-        n_nodes = len(cell)
-        if n_nodes == 3:
-            cell_type = mc.NORM_TRI3
-        elif n_nodes == 4:
-            cell_type = mc.NORM_QUAD4
-        else:
-            cell_type = mc.NORM_POLYGON
-
+        cell_type = mc.NORM_POLYGON
         cells_by_type.setdefault(cell_type, []).append((cell_id, cell))
 
     umesh.allocateCells(tria_mesh.n_cells)
