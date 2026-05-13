@@ -484,13 +484,13 @@ def _export_med_multi(solver, u_dofs, filename, fields):
     
     # Create MEDCoupling mesh once (shared for all fields)
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
+
     
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
     
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
     umesh.setCoords(coords_mc)
@@ -927,15 +927,12 @@ def _export_med_p0_multi(solver, u_dofs, filename, fields):
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        # Add z=0 coordinate
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
-
     # Create coordinate array
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     # Create unstructured mesh
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
@@ -1063,15 +1060,13 @@ def _export_med_p1_vertex_multi(solver, u_dofs, filename, fields):
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        # Add z=0 coordinate
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
-
     # Create coordinate array
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     # Create unstructured mesh
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
@@ -1192,15 +1187,13 @@ def _export_med_p0_p1(solver, u_dofs, filename, field_name_p0, field_name_p1):
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        # Add z=0 coordinate
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
-
     # Create coordinate array
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     # Create unstructured mesh
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
@@ -1390,15 +1383,13 @@ def _export_med_p0_p1_gradients(solver, u_dofs, filename, field_name):
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        # Add z=0 coordinate
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
-
     # Create coordinate array
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     # Create unstructured mesh
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
@@ -1573,15 +1564,15 @@ def _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name):
 
     # Create MEDCoupling mesh
     coords_array = mesh.vertices
-    if coords_array.shape[1] == 2:
-        # Add z=0 coordinate
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
-    else:
-        coords_3d = coords_array
+
 
     # Create coordinate array
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+    coords_mc = mc.DataArrayDouble(coords_array)
+
+    if coords_array.shape[1] == 2:
+        coords_mc.setInfoOnComponents(["X", "Y"])
+    else:
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     # Create unstructured mesh
     umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
@@ -1708,13 +1699,11 @@ def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
 
     # Build MEDCoupling mesh from the triangular mesh data
     coords_array = tria_mesh.vertices
+    coords_mc = mc.DataArrayDouble(coords_array)
     if coords_array.shape[1] == 2:
-        coords_3d = np.column_stack([coords_array, np.zeros(len(coords_array))])
+        coords_mc.setInfoOnComponents(["X", "Y"])
     else:
-        coords_3d = coords_array
-
-    coords_mc = mc.DataArrayDouble(coords_3d)
-    coords_mc.setInfoOnComponents(["X", "Y", "Z"])
+        coords_mc.setInfoOnComponents(["X", "Y", "Z"])
 
     umesh = mc.MEDCouplingUMesh("tria_mesh", 2)
     umesh.setCoords(coords_mc)
