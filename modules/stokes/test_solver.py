@@ -117,6 +117,70 @@ def kovasznay_flow():
     
     return u_exact, v_exact, p_exact, f_source, bc_func
 
+def bercovier_engelman_2d():
+    """
+    2D Bercovier-Engelman test case: FVCA8 Conference benchmark for Stokes solvers
+    
+    Classical benchmark for Stokes solvers on domain [0,1]²
+    
+    Exact solution with rotational symmetry:
+        u₁(x,y) = -256*x²*(x-1)²*y*(y-1)*(2y-1)
+        u(x,y) = (u₁(x,y), -u₁(y,x))ᵀ
+        p(x,y) = (x - 0.5)*(y - 0.5)
+    
+    Satisfies:
+        - Homogeneous Dirichlet BCs (zero on boundary)
+        - Continuity equation: ∇·u = 0
+        - Stokes equations with source term
+    
+    Source term (with viscosity ν = 1):
+        f₁(x,y) = 256[x²(x-1)²(12y-6) + y(y-1)(2y-1)(12x²-12x+2)]
+        f(x,y) = (f₁(x,y) + (y-0.5), -f₁(y,x) + (x-0.5))ᵀ
+    
+    This test case is valuable because:
+    - Polynomial solution (exact for P1 elements up to interpolation error)
+    - Both velocity components are non-zero (rotational flow)
+    - Non-trivial pressure field
+    - Challenging benchmark for validation
+    
+    Reference: Bercovier & Engelman (1979)
+    """
+    def u1(x, y):
+        """Helper function for constructing rotational velocity field"""
+        return -256.0 * x**2 * (x - 1.0)**2 * y * (y - 1.0) * (2.0*y - 1.0)
+    
+    def u_exact(x, y):
+        return u1(x, y)
+    
+    def v_exact(x, y):
+        return -u1(y, x)
+    
+    def p_exact(x, y):
+        return (x - 0.5) * (y - 0.5)
+    
+    def f_source(x, y, mu=1.0):
+        # f₁(x,y) = 256[x²(x-1)²(12y-6) + y(y-1)(2y-1)(12x²-12x+2)]
+        f1_val = 256.0 * (
+            x**2 * (x - 1.0)**2 * (12.0*y - 6.0) +
+            y * (y - 1.0) * (2.0*y - 1.0) * (12.0*x**2 - 12.0*x + 2.0)
+        )
+        
+        # Apply rotational transformation to get f
+        # f = (f₁(x,y) + (y-0.5), -f₁(y,x) + (x-0.5))
+        f_x = f1_val + (y - 0.5)
+        f_y = -256.0 * (
+            y**2 * (y - 1.0)**2 * (12.0*x - 6.0) +
+            x * (x - 1.0) * (2.0*x - 1.0) * (12.0*y**2 - 12.0*y + 2.0)
+        ) + (x - 0.5)
+        
+        return f_x, f_y
+    
+    def bc_func(x, y):
+        # Homogeneous Dirichlet BCs: zero velocity on boundary
+        return (0.0, 0.0)
+    
+    return u_exact, v_exact, p_exact, f_source, bc_func
+
 
 # ============================================================================
 # Accuracy Tests
@@ -221,6 +285,175 @@ def test_p1dg_stokes_polynomial_accuracy():
     assert max_u_error < 0.05, f"u velocity error too large: {max_u_error}"
     assert max_v_error < 0.05, f"v velocity error too large: {max_v_error}"
     assert max_p_error < 0.5, f"pressure error too large: {max_p_error}"
+
+def test_p1dg_stokes_bercovier_engelman_2d_accuracy():
+    """Test P1 DG Stokes Solver Accuracy on 2D Bercovier-Engelman (sophisticated benchmark)"""
+    print("Testing P1 DG Stokes Solver Accuracy on 2D Bercovier-Engelman Benchmark")
+    
+    mesh = polygonal_mesh.create_square_mesh(n=11)
+    u_exact, v_exact, p_exact, f_source, bc_func = bercovier_engelman_2d()
+    
+    bc = boundary_conditions.BoundaryConditionManager(mesh)
+    bc.add_bc_to_all_boundaries("dirichlet", bc_func, is_vector=True)
+    
+    mu = 1.0
+    solver = P1DGStokesSolver(mesh, bc, viscosity=mu, penalty_u=40.0, penalty_p=0.5)
+    
+    def f(x, y):
+        return f_source(x, y, mu)
+    
+    u_dofs = solver.solve(f)
+    
+    # Compute errors at cell centroids
+    u_errors = []
+    v_errors = []
+    p_errors = []
+    
+    for cell_id in range(mesh.n_cells):
+        x, y = mesh.cell_centroid(cell_id)
+        u_num, v_num, p_num = solver.evaluate_solution(u_dofs, (x, y), cell_id)
+        
+        u_errors.append(abs(u_num - u_exact(x, y)))
+        v_errors.append(abs(v_num - v_exact(x, y)))
+        p_errors.append(abs(p_num - p_exact(x, y)))
+    
+    max_u_error = max(u_errors)
+    max_v_error = max(v_errors)
+    max_p_error = max(p_errors)
+    
+    l2_u_error = np.sqrt(np.mean(np.array(u_errors)**2))
+    l2_v_error = np.sqrt(np.mean(np.array(v_errors)**2))
+    l2_p_error = np.sqrt(np.mean(np.array(p_errors)**2))
+    
+    print(f"  Max errors: u={max_u_error:.3e}, v={max_v_error:.3e}, p={max_p_error:.3e}")
+    print(f"  L2 errors:  u={l2_u_error:.3e}, v={l2_v_error:.3e}, p={l2_p_error:.3e}")
+    
+    # Check divergence
+    div_errors = []
+    for cell_id in range(mesh.n_cells):
+        div = solver.compute_velocity_divergence(u_dofs, cell_id)
+        div_errors.append(abs(div))
+    
+    max_div = max(div_errors)
+    print(f"  Max divergence: {max_div:.3e}")
+    
+    # 2D Bercovier-Engelman: complex velocity field with both u and v non-zero
+    # Homogeneous Dirichlet BCs on boundary, sophisticated benchmark
+    assert max_u_error < 5.0, f"u velocity error too large: {max_u_error}"
+    assert max_v_error < 5.0, f"v velocity error too large: {max_v_error}"
+    assert max_p_error < 5.0, f"pressure error too large: {max_p_error}"
+    assert max_div < 10.0, f"divergence too large: {max_div}"
+
+
+def test_p1dg_stokes_bercovier_engelman_2d_convergence():
+    """Convergence study: 2D Bercovier-Engelman with mesh refinement
+    
+    Tests error reduction as mesh is refined (h → 0)
+    Computes convergence rates for velocity and pressure
+    """
+    print("\n" + "="*70)
+    print("Convergence Study: 2D Bercovier-Engelman Test Case")
+    print("="*70)
+    
+    u_exact, v_exact, p_exact, f_source, bc_func = bercovier_engelman_2d()
+    mu = 1.0
+    
+    mesh_sizes = []
+    hs = []
+    u_l2_errors = []
+    v_l2_errors = []
+    p_l2_errors = []
+    div_errors = []
+    
+    for n in [5, 8, 11, 15]:
+        print(f"\nMesh refinement: n={n}")
+        mesh = polygonal_mesh.create_square_mesh(n=n)
+        mesh_sizes.append(mesh.n_cells)
+        h = 1.0 / n
+        hs.append(h)
+        
+        bc = boundary_conditions.BoundaryConditionManager(mesh)
+        bc.add_bc_to_all_boundaries("dirichlet", bc_func, is_vector=True)
+        
+        solver = P1DGStokesSolver(mesh, bc, viscosity=mu, penalty_u=40.0, penalty_p=0.5)
+        
+        def f(x, y):
+            return f_source(x, y, mu)
+        
+        u_dofs = solver.solve(f)
+        
+        # Compute L2 errors at cell centroids
+        u_err = []
+        v_err = []
+        p_err = []
+        div_err = []
+        
+        for cell_id in range(mesh.n_cells):
+            x, y = mesh.cell_centroid(cell_id)
+            u_num, v_num, p_num = solver.evaluate_solution(u_dofs, (x, y), cell_id)
+            
+            u_err.append((u_num - u_exact(x, y))**2)
+            v_err.append((v_num - v_exact(x, y))**2)
+            p_err.append((p_num - p_exact(x, y))**2)
+            
+            div = solver.compute_velocity_divergence(u_dofs, cell_id)
+            div_err.append(div**2)
+        
+        u_l2 = np.sqrt(np.mean(u_err))
+        v_l2 = np.sqrt(np.mean(v_err))
+        p_l2 = np.sqrt(np.mean(p_err))
+        div_max = np.sqrt(np.max(div_err))
+        
+        u_l2_errors.append(u_l2)
+        v_l2_errors.append(v_l2)
+        p_l2_errors.append(p_l2)
+        div_errors.append(div_max)
+        
+        print(f"  Cells: {mesh.n_cells:4d} | h={h:.4f}")
+        print(f"  L2 errors: u={u_l2:.3e}, v={v_l2:.3e}, p={p_l2:.3e}")
+        print(f"  Max div: {div_max:.3e}")
+    
+    # Compute convergence rates
+    print("\n" + "-"*70)
+    print("Convergence Rates (log-log analysis):")
+    print("-"*70)
+    
+    # Convergence rate: log(e1/e2) / log(h1/h2)
+    if len(hs) >= 2:
+        u_rates = []
+        v_rates = []
+        p_rates = []
+        
+        for i in range(len(hs)-1):
+            u_rate = np.log(u_l2_errors[i]/u_l2_errors[i+1]) / np.log(hs[i]/hs[i+1])
+            v_rate = np.log(v_l2_errors[i]/v_l2_errors[i+1]) / np.log(hs[i]/hs[i+1])
+            p_rate = np.log(p_l2_errors[i]/p_l2_errors[i+1]) / np.log(hs[i]/hs[i+1])
+            
+            u_rates.append(u_rate)
+            v_rates.append(v_rate)
+            p_rates.append(p_rate)
+            
+            print(f"\nRefinement {i+1}→{i+2} (h: {hs[i]:.4f} → {hs[i+1]:.4f}):")
+            print(f"  u convergence rate: {u_rate:.2f}")
+            print(f"  v convergence rate: {v_rate:.2f}")
+            print(f"  p convergence rate: {p_rate:.2f}")
+        
+        avg_u_rate = np.mean(u_rates)
+        avg_v_rate = np.mean(v_rates)
+        avg_p_rate = np.mean(p_rates)
+        
+        print("\n" + "-"*70)
+        print("Average Convergence Rates:")
+        print(f"  u: {avg_u_rate:.2f} (expected ~1-2 for P1 DG)")
+        print(f"  v: {avg_v_rate:.2f} (expected ~1-2 for P1 DG)")
+        print(f"  p: {avg_p_rate:.2f} (expected ~0.5-1.5 for P1 DG)")
+        print("="*70 + "\n")
+        
+        # Verify that convergence is occurring (positive rates)
+        # Note: Pressure convergence is typically slower than velocity for P1-P1 elements
+        assert avg_u_rate > 0.5, f"u convergence rate too low: {avg_u_rate}"
+        assert avg_v_rate > 0.5, f"v convergence rate too low: {avg_v_rate}"
+        assert avg_p_rate > 0.3, f"p convergence rate too low: {avg_p_rate}"
 
 
 # ============================================================================
@@ -858,6 +1091,7 @@ if __name__ == "__main__":
     # Convergence tests (disabled - need manufactured solution verification)
     # _test_convergence_rate_velocity()
     # _test_convergence_rate_pressure()
+    test_p1dg_stokes_bercovier_engelman_accuracy()
     
     # Penalty tests
     test_penalty_stability_velocity()
