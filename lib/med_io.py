@@ -1,5 +1,7 @@
 """Mesh I/O utilities for various formats (MED, VTK)."""
 
+from pathlib import Path
+
 try:
     import medcoupling as mc
 except ImportError:
@@ -1787,6 +1789,7 @@ def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
     med_mesh = mc.MEDFileUMesh()
     med_mesh.setMeshAtLevel(0, umesh)
     med_mesh.setName("tria_mesh")
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     med_mesh.write(output_file, 2)  # overwrite
 
     # Create node-based fields and write them to the MED file
