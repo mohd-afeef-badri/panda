@@ -104,3 +104,14 @@ if __name__ == "__main__":
             "velocity": {"type": "vector", "components": [0, 1], "projection": "nodes"},
             "pressure": {"type": "scalar", "components": [2], "projection": "nodes"}
         })
+
+    # # Export to triangular mesh (med) values are projected to triangular mesh
+    # med_io.project_and_export_to_triangular_mesh_med(
+    #     solver, u_dofs,
+    #     tria_mesh_file="./../poisson/mesh/square_tria.med",
+    #     output_file="./solution/stokes_P1_tria_new.med",
+    #     fields={
+    #         "velocity": {"type": "vector", "components": [0, 1]},
+    #         "pressure": {"type": "scalar", "components": [2]},
+    #     },
+    # )

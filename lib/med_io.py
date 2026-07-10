@@ -1674,28 +1674,92 @@ def _export_med_p0_p1_gradient_mag(solver, u_dofs, filename, field_name):
 
 def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
                                          output_file="solution_tria.med",
-                                         field_name="u"):
+                                         fields=None):
     """
-    Project P1 DG solution (polymesh cell-centroid values) onto a triangular
-    MED mesh whose vertices correspond to the polymesh cell centroids, and
-    write the result into a MED file (node-based field).
+    Export solution to a triangular MED mesh where triangular vertices are
+    evaluated with the nearest polygonal cell context.
+
+    Parameters:
+    -----------
+    solver : Solver object
+    u_dofs : array
+        Solution DOF array from the polygonal mesh
+    tria_mesh_file : str
+        Path to the triangular mesh file
+    output_file : str
+        Output MED filename
+    fields : dict or str, optional
+        Field specification:
+        {
+            "field_name": {
+                "type": "scalar"|"vector",
+                "components": [indices]
+            }
+        }
     """
     if mc is None:
         raise ImportError("MEDCoupling (mc) is required to export MED files")
 
+    if isinstance(fields, str):
+        fields = {fields: {"type": "scalar", "components": [0]}}
+    elif fields is None:
+        fields = {"u": {"type": "scalar", "components": [0]}}
+
     print(f"Loading triangular mesh from {tria_mesh_file}...")
     tria_mesh = load_med_mesh_mc(tria_mesh_file)
 
-    if tria_mesh.n_vertices != solver.mesh.n_cells:
-        print(f"WARNING: Triangular mesh has {tria_mesh.n_vertices} vertices "
-              f"but polymesh has {solver.mesh.n_cells} cells!")
-        print("Proceeding anyway, but results may be incorrect.")
+    print(f"Triangular mesh has {tria_mesh.n_vertices} vertices")
+    print(f"Polygonal mesh has {solver.mesh.n_cells} cells")
 
-    # Evaluate DG solution at each polymesh cell centroid -> values at tria nodes
-    u_tria_vertices = np.zeros(tria_mesh.n_vertices)
-    for cell_id in range(min(solver.mesh.n_cells, tria_mesh.n_vertices)):
-        cent = solver.mesh.cell_centroid(cell_id)
-        u_tria_vertices[cell_id] = solver.evaluate_solution(u_dofs, cent, cell_id)
+    print("Building coordinate mapping between meshes...")
+    vertex_mapping = []
+    for tria_vtx_id in range(tria_mesh.n_vertices):
+        tria_pos = tria_mesh.vertices[tria_vtx_id]
+
+        min_dist = float('inf')
+        best_cell_id = -1
+        for poly_cell_id in range(solver.mesh.n_cells):
+            poly_cent = solver.mesh.cell_centroid(poly_cell_id)
+            dist = np.linalg.norm(tria_pos - poly_cent)
+
+            if dist < min_dist:
+                min_dist = dist
+                best_cell_id = poly_cell_id
+
+        vertex_mapping.append((best_cell_id, tria_pos))
+
+    print("Mapping complete.")
+
+    field_data = {}
+    for name, field_spec in fields.items():
+        field_type = field_spec["type"]
+        if field_type == "scalar":
+            field_data[name] = np.zeros(tria_mesh.n_vertices)
+        elif field_type == "vector":
+            n_components = len(field_spec["components"])
+            field_data[name] = np.zeros((tria_mesh.n_vertices, n_components))
+        else:
+            raise ValueError(f"Unknown field type for '{name}': {field_type}")
+
+    for tria_vtx_id, (poly_cell_id, eval_point) in enumerate(vertex_mapping):
+        sol_values = solver.evaluate_solution(u_dofs, eval_point, poly_cell_id)
+
+        if isinstance(sol_values, tuple):
+            sol_values = np.array(sol_values, dtype=float)
+        elif not isinstance(sol_values, (list, np.ndarray)):
+            sol_values = np.array([sol_values], dtype=float)
+        else:
+            sol_values = np.array(sol_values, dtype=float)
+
+        for name, field_spec in fields.items():
+            components = field_spec["components"]
+            field_type = field_spec["type"]
+
+            if field_type == "scalar":
+                field_data[name][tria_vtx_id] = sol_values[components[0]]
+            elif field_type == "vector":
+                for i, comp_idx in enumerate(components):
+                    field_data[name][tria_vtx_id, i] = sol_values[comp_idx]
 
     # Build MEDCoupling mesh from the triangular mesh data
     coords_array = tria_mesh.vertices
@@ -1720,26 +1784,45 @@ def project_and_export_to_triangular_mesh_med(solver, u_dofs, tria_mesh_file,
             umesh.insertNextCell(cell_type, cell)
     umesh.finishInsertingCells()
 
-    # Create node-based field and write MED file
-    field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
-    field.setName(field_name)
-    field.setMesh(umesh)
-    field.setTime(0.0, 0, 0)
-
-    field_array = mc.DataArrayDouble(u_tria_vertices)
-    field_array.setInfoOnComponent(0, field_name)
-    field.setArray(field_array)
-
-    field.checkConsistencyLight()
-
     med_mesh = mc.MEDFileUMesh()
     med_mesh.setMeshAtLevel(0, umesh)
     med_mesh.setName("tria_mesh")
     med_mesh.write(output_file, 2)  # overwrite
 
-    med_writer = mc.MEDFileField1TS()
-    med_writer.setFieldNoProfileSBT(field)
-    med_writer.write(output_file, 0)  # append
+    # Create node-based fields and write them to the MED file
+    for name, field_spec in fields.items():
+        field = mc.MEDCouplingFieldDouble(mc.ON_NODES, mc.ONE_TIME)
+        field.setName(name)
+        field.setMesh(umesh)
+        field.setTime(0.0, 0, 0)
+
+        if field_spec["type"] == "scalar":
+            field_array = mc.DataArrayDouble(field_data[name])
+            field_array.setInfoOnComponent(0, name)
+        elif field_spec["type"] == "vector":
+            n_components = len(field_spec["components"])
+            if n_components == 2:
+                data = np.column_stack([field_data[name], np.zeros(len(field_data[name]))])
+                n_components_out = 3
+            else:
+                data = field_data[name]
+                n_components_out = n_components
+
+            field_array = mc.DataArrayDouble(data.ravel().tolist(), len(data), n_components_out)
+            comp_names = ['x', 'y', 'z']
+            for i in range(n_components):
+                field_array.setInfoOnComponent(i, f"{name}_{comp_names[i]}")
+            if n_components == 2:
+                field_array.setInfoOnComponent(2, f"{name}_z")
+
+        field.setArray(field_array)
+        field.checkConsistencyLight()
+
+        med_writer = mc.MEDFileField1TS()
+        med_writer.setFieldNoProfileSBT(field)
+        med_writer.write(output_file, 0)  # append
 
     print(f"Solution exported to triangular MED: {output_file}")
     print(f"  - Triangular mesh vertices: {tria_mesh.n_vertices}")
+    print(f"  - Triangular mesh cells: {tria_mesh.n_cells}")
+    print(f"  Fields: {', '.join(fields.keys())}")

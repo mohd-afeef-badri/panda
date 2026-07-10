@@ -58,7 +58,7 @@ if __name__ == "__main__":
     # med_io.project_and_export_to_triangular_mesh_med(solver, u_dofs, 
     #     tria_mesh_file="./mesh/mesh_tria_0.med",
     #     output_file="./solution/solution_triangular.med",
-    #     field_name="u"
+    #     fields={"u": {"type": "scalar", "components": [0]}}
     # )
 
     # Export u using cell field (P0 projection)
