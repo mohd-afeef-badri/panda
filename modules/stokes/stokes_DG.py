@@ -112,7 +112,8 @@ class P1DGStokesSolver:
             points.append(x)
         points = np.array(points)
         
-        weights = ref_wts * 2 * area
+        # ref_wts above are normalized to 1; scale by area
+        weights = ref_wts * area
         return points, weights
 
     def get_polygon_quadrature(self, cell_id, order=2):
@@ -187,12 +188,16 @@ class P1DGStokesSolver:
                     b[idx['u'][i]] += fx * phi[i] * qw
                     b[idx['v'][i]] += fy * phi[i] * qw
                 
-                # Pressure regularization (integrated over cell)
-                for i in range(3):
-                    A[idx['p'][i], idx['p'][i]] -= self.regularization * qw
-                
                 for i in range(3):
                     for j in range(3):
+                        # A tiny pressure mass term removes the global
+                        # constant-pressure nullspace.  Assemble the actual
+                        # mass matrix rather than applying the same diagonal
+                        # weight to all three (differently scaled) modes.
+                        A[idx['p'][i], idx['p'][j]] -= (
+                            self.regularization * phi[i] * phi[j] * qw
+                        )
+
                         # Viscosity: μ (∇u, ∇v)
                         visc = self.mu * (gx[i]*gx[j] + gy[i]*gy[j]) * qw
                         A[idx['u'][i], idx['u'][j]] += visc
@@ -273,16 +278,34 @@ class P1DGStokesSolver:
                     A[idx_j['u'][i], idx_j['u'][j]] += term_jj
                     A[idx_j['v'][i], idx_j['v'][j]] += term_jj
                     
+                    # ===== VELOCITY-PRESSURE DG FLUX =====
+                    # b(v,p) = -(p, div(v)) + <{p}, [v]·n>.
+                    # The continuity block is its transpose.  These terms
+                    # are essential: without them the method is not
+                    # consistent for continuous affine pressure/velocity.
+                    for velocity in ('u', 'v'):
+                        n_component = n[0] if velocity == 'u' else n[1]
+                        flux = 0.5 * n_component * qw
+
+                        A[idx_i[velocity][i], idx_i['p'][j]] += flux * phi_i[i] * phi_i[j]
+                        A[idx_i[velocity][i], idx_j['p'][j]] += flux * phi_i[i] * phi_j[j]
+                        A[idx_j[velocity][i], idx_i['p'][j]] -= flux * phi_j[i] * phi_i[j]
+                        A[idx_j[velocity][i], idx_j['p'][j]] -= flux * phi_j[i] * phi_j[j]
+
+                        A[idx_i['p'][j], idx_i[velocity][i]] += flux * phi_i[i] * phi_i[j]
+                        A[idx_j['p'][j], idx_i[velocity][i]] += flux * phi_i[i] * phi_j[j]
+                        A[idx_i['p'][j], idx_j[velocity][i]] -= flux * phi_j[i] * phi_i[j]
+                        A[idx_j['p'][j], idx_j[velocity][i]] -= flux * phi_j[i] * phi_j[j]
+
                     # ===== PRESSURE: Jump Stabilization =====
-                    # (γ_p h) ∫ [[p]]·[[q]] ds
-                    jump_p_i = phi_i[i] - phi_j[i]
-                    jump_p_j = phi_i[j] - phi_j[j]
-                    p_stab = sig_p * qw * jump_p_i * jump_p_j
-                    
-                    A[idx_i['p'][i], idx_i['p'][j]] += p_stab
-                    A[idx_i['p'][i], idx_j['p'][j]] -= p_stab
-                    A[idx_j['p'][i], idx_i['p'][j]] -= p_stab
-                    A[idx_j['p'][i], idx_j['p'][j]] += p_stab
+                    # The saddle-point block is -s(p,q).  Assemble the four
+                    # traces separately; subtracting basis values first is
+                    # invalid because the two traces have different DOFs.
+                    p_stab = sig_p * qw
+                    A[idx_i['p'][i], idx_i['p'][j]] -= p_stab * phi_i[i] * phi_i[j]
+                    A[idx_i['p'][i], idx_j['p'][j]] += p_stab * phi_i[i] * phi_j[j]
+                    A[idx_j['p'][i], idx_i['p'][j]] += p_stab * phi_j[i] * phi_i[j]
+                    A[idx_j['p'][i], idx_j['p'][j]] -= p_stab * phi_j[i] * phi_j[j]
 
     def _assemble_dirichlet_face_quad(self, A, b, edge_id, cell_i, h_e, sig_u, bc):
         """Dirichlet BC assembly with 2-point Gauss quadrature"""
@@ -307,8 +330,8 @@ class P1DGStokesSolver:
                 b[idx_i['u'][i]] += (sig_u * phi_i[i] - self.mu * gn_i[i]) * gu * qw
                 b[idx_i['v'][i]] += (sig_u * phi_i[i] - self.mu * gn_i[i]) * gv * qw
                 
-                # Pressure BC contribution: -∫ q (g·n) ds
-                b[idx_i['p'][i]] -= phi_i[i] * (gu*n[0] + gv*n[1]) * qw
+                # Continuity equation boundary datum: <q, g·n>.
+                b[idx_i['p'][i]] += phi_i[i] * (gu*n[0] + gv*n[1]) * qw
                 
                 for j in range(3):
                     # LHS: Penalty + consistency
@@ -317,6 +340,16 @@ class P1DGStokesSolver:
                            - self.mu * gn_i[i] * phi_i[j]) * qw
                     A[idx_i['u'][i], idx_i['u'][j]] += val
                     A[idx_i['v'][i], idx_i['v'][j]] += val
+
+                    # Boundary part of b(v,p), plus its transpose.  Together
+                    # with the volume term this is the integration-by-parts
+                    # consistent pressure gradient/divergence coupling.
+                    px = phi_i[i] * phi_i[j] * n[0] * qw
+                    py = phi_i[i] * phi_i[j] * n[1] * qw
+                    A[idx_i['u'][i], idx_i['p'][j]] += px
+                    A[idx_i['p'][j], idx_i['u'][i]] += px
+                    A[idx_i['v'][i], idx_i['p'][j]] += py
+                    A[idx_i['p'][j], idx_i['v'][i]] += py
 
     def _assemble_neumann_face_quad(self, A, b, edge_id, cell_i, h_e, bc):
         """Neumann BC assembly with 2-point Gauss quadrature"""
