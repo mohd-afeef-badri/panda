@@ -1119,6 +1119,58 @@ def test_regression_simple_cavity():
     assert p_max < expected_ranges['p_max'], f"p_max out of range: {p_max}"
 
 
+def _solve_stokes_with_krylov(method, solver_options):
+    mesh = polygonal_mesh.create_square_mesh(n=3)
+    bc = boundary_conditions.BoundaryConditionManager(mesh)
+    bc.add_bc_to_all_boundaries("dirichlet", (0.0, 0.0), is_vector=True)
+    source = lambda x, y: (1.0, -1.0)
+
+    direct_solution = P1DGStokesSolver(mesh, bc).solve(source)
+    solver = P1DGStokesSolver(
+        mesh,
+        bc,
+        linear_solver=method,
+        solver_options=solver_options,
+    )
+    krylov_solution = solver.solve(source)
+    assert krylov_solution is not None
+    return direct_solution, krylov_solution, solver
+
+
+def test_stokes_gmres_ilu_matches_direct_solver():
+    direct, krylov, solver = _solve_stokes_with_krylov(
+        "gmres",
+        {
+            "preconditioner": "ilu",
+            "preconditioner_options": {
+                "drop_tol": 1e-3,
+                "fill_factor": 10,
+                "permc_spec": "MMD_AT_PLUS_A",
+                "diag_pivot_thresh": 0.0,
+            },
+            "restart": 50,
+            "rtol": 1e-9,
+            "maxiter": 1000,
+        },
+    )
+
+    assert np.allclose(krylov, direct, rtol=1e-7, atol=1e-9)
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "gmres"
+
+
+def test_stokes_minres_matches_direct_solver():
+    direct, krylov, solver = _solve_stokes_with_krylov(
+        "minres",
+        {"rtol": 1e-11, "maxiter": 1000},
+    )
+
+    relative_error = np.linalg.norm(krylov - direct) / np.linalg.norm(direct)
+    assert relative_error < 1e-6
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "minres"
+
+
 if __name__ == "__main__":
     # Run all tests
     print("="*80)

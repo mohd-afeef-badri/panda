@@ -646,3 +646,47 @@ def test_mixed_mode_bc_groups_analytical():
     assert np.max(u_dofs) > 3.0, "Solution should have significant positive values from left BC"
     # Right wall is insulated, bottom/top are zero, so we expect reasonable range
     assert np.min(u_dofs) < 0.0, "Solution should have negative values (extension from boundaries)"
+
+
+def _solve_poisson_with_krylov(method, solver_options):
+    mesh = polygonal_mesh.create_square_mesh(n=3)
+    bc = boundary_conditions.BoundaryConditionManager(mesh)
+    bc.add_bc_to_all_boundaries("dirichlet", 0.0)
+    source = lambda x, y: 1.0
+
+    direct_solution = P1DGPoissonSolver(mesh, bc).solve(source)
+    solver = P1DGPoissonSolver(
+        mesh,
+        bc,
+        linear_solver=method,
+        solver_options=solver_options,
+    )
+    krylov_solution = solver.solve(source)
+    return direct_solution, krylov_solution, solver
+
+
+def test_poisson_cg_matches_direct_solver():
+    direct, krylov, solver = _solve_poisson_with_krylov(
+        "cg",
+        {"preconditioner": "jacobi", "rtol": 1e-10, "maxiter": 500},
+    )
+
+    assert np.allclose(krylov, direct, rtol=1e-8, atol=1e-10)
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "cg"
+
+
+def test_poisson_gmres_ilu_matches_direct_solver():
+    direct, krylov, solver = _solve_poisson_with_krylov(
+        "gmres",
+        {
+            "preconditioner": "ilu",
+            "restart": 20,
+            "rtol": 1e-10,
+            "maxiter": 500,
+        },
+    )
+
+    assert np.allclose(krylov, direct, rtol=1e-8, atol=1e-10)
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "gmres"

@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
-from scipy.sparse.linalg import spsolve
 from panda.lib import boundary_conditions
+from panda.lib.linear_solvers import solve_linear_system
 
 class P1DGPoissonSolver:
     """
@@ -15,12 +15,16 @@ class P1DGPoissonSolver:
     Uses piecewise linear approximation on each cell
     For each cells: 3 DOFs per cell (constant + x + y gradient)
     """
-    def __init__(self, mesh, bc_manager, penalty_param=10.0):
+    def __init__(self, mesh, bc_manager, penalty_param=10.0,
+                 linear_solver="direct", solver_options=None):
         self.mesh = mesh
         self.bc_manager = bc_manager
         self.penalty = penalty_param
         self.n_dofs_per_cell = 3  # P1 in 2D: [1, x, y]
         self.n_dofs = mesh.n_cells * self.n_dofs_per_cell
+        self.linear_solver = linear_solver
+        self.solver_options = dict(solver_options or {})
+        self.last_solve_info = None
 
     def local_to_global(self, cell_id, local_dof):
         """Map local DOF to global DOF index"""
@@ -200,7 +204,10 @@ class P1DGPoissonSolver:
     def solve(self, f_func):
         """Solve the Poisson problem with BC from bc_manager"""
         A, b = self.assemble_system(f_func)
-        u_dofs = spsolve(A, b)
+        self.last_solve_info = None
+        u_dofs, self.last_solve_info = solve_linear_system(
+            A, b, method=self.linear_solver, **self.solver_options
+        )
         return u_dofs
     
     def evaluate_solution(self, u_dofs, point, cell_id):

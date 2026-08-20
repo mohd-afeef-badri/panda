@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
-from scipy.sparse.linalg import spsolve
 from panda.lib import boundary_conditions
+from panda.lib.linear_solvers import solve_linear_system
 
 class P1DGStokesSolver:
     """
@@ -23,7 +23,8 @@ class P1DGStokesSolver:
     - Pressure jump stabilization
     """
     
-    def __init__(self, mesh, bc_manager, viscosity=1.0, penalty_u=40.0, penalty_p=0.5):
+    def __init__(self, mesh, bc_manager, viscosity=1.0, penalty_u=40.0,
+                 penalty_p=0.5, linear_solver="direct", solver_options=None):
         """
         Parameters
         ----------
@@ -44,6 +45,9 @@ class P1DGStokesSolver:
         self.dofs_per_cell = 9  # 3 for u, 3 for v, 3 for p
         self.n_dofs = mesh.n_cells * self.dofs_per_cell
         self.regularization = 1e-6  # Pressure nullspace fix
+        self.linear_solver = linear_solver
+        self.solver_options = dict(solver_options or {})
+        self.last_solve_info = None
 
     def get_indices(self, cell_id):
         """Get DOF indices for u, v, p components"""
@@ -382,9 +386,12 @@ class P1DGStokesSolver:
         print(f"  Nonzeros: {A.nnz}")
         print(f"  Sparsity: {100 * (1 - A.nnz / (A.shape[0] * A.shape[1])):.1f}%")
         print(f"  RHS norm: {np.linalg.norm(b):.6e}")
-        
+
+        self.last_solve_info = None
         try:
-            u_dofs = spsolve(A, b)
+            u_dofs, self.last_solve_info = solve_linear_system(
+                A, b, method=self.linear_solver, **self.solver_options
+            )
         except Exception as e:
             print(f"Solver failed: {e}")
             return None
@@ -395,8 +402,10 @@ class P1DGStokesSolver:
             return None
         
         # Check residual
-        residual = np.linalg.norm(A @ u_dofs - b)
-        print(f"  Solution residual: {residual:.6e}")
+        print(f"  Linear solver: {self.last_solve_info.method}")
+        print(f"  Iterations: {self.last_solve_info.iterations}")
+        print(f"  Solve time: {self.last_solve_info.elapsed_seconds:.3f} s")
+        print(f"  Solution residual: {self.last_solve_info.residual_norm:.6e}")
         print(f"  Solution norm: {np.linalg.norm(u_dofs):.6e}")
         
         return u_dofs

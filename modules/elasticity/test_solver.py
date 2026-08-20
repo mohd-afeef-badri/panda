@@ -719,6 +719,53 @@ def test_regression_cantilever():
     assert uy_max < expected_ranges['uy_max'], f"uy_max out of range: {uy_max}"
 
 
+def _solve_elasticity_with_krylov(method, solver_options):
+    mesh = polygonal_mesh.create_square_mesh(n=3)
+    bc = boundary_conditions.BoundaryConditionManager(mesh)
+    bc.add_bc_to_all_boundaries("dirichlet", (0.0, 0.0), is_vector=True)
+    source = lambda x, y: (1.0, -1.0)
+
+    direct_solution = P1DGLinearElasticitySolver(
+        mesh, bc, penalty_param=50.0
+    ).solve(source)
+    solver = P1DGLinearElasticitySolver(
+        mesh,
+        bc,
+        penalty_param=50.0,
+        linear_solver=method,
+        solver_options=solver_options,
+    )
+    krylov_solution = solver.solve(source)
+    return direct_solution, krylov_solution, solver
+
+
+def test_elasticity_cg_matches_direct_solver():
+    direct, krylov, solver = _solve_elasticity_with_krylov(
+        "cg",
+        {"preconditioner": "jacobi", "rtol": 1e-9, "maxiter": 1000},
+    )
+
+    assert np.allclose(krylov, direct, rtol=1e-7, atol=1e-9)
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "cg"
+
+
+def test_elasticity_gmres_ilu_matches_direct_solver():
+    direct, krylov, solver = _solve_elasticity_with_krylov(
+        "gmres",
+        {
+            "preconditioner": "ilu",
+            "restart": 20,
+            "rtol": 1e-10,
+            "maxiter": 500,
+        },
+    )
+
+    assert np.allclose(krylov, direct, rtol=1e-8, atol=1e-10)
+    assert solver.last_solve_info.converged
+    assert solver.last_solve_info.method == "gmres"
+
+
 if __name__ == "__main__":
     # Run all tests
     print("="*80)
