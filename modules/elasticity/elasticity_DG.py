@@ -5,8 +5,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 from scipy.sparse import lil_matrix, csr_matrix
-from scipy.sparse.linalg import spsolve
 from panda.lib import boundary_conditions
+from panda.lib.linear_solvers import solve_linear_system
 
 class P1DGLinearElasticitySolver:
     """
@@ -19,7 +19,8 @@ class P1DGLinearElasticitySolver:
     - Full SIPG formulation with consistency terms
     """
     
-    def __init__(self, mesh, bc_manager, lame_lambda=1.0, lame_mu=1.0, penalty_param=10.0):
+    def __init__(self, mesh, bc_manager, lame_lambda=1.0, lame_mu=1.0,
+                 penalty_param=10.0, linear_solver="direct", solver_options=None):
         self.mesh = mesh
         self.bc_manager = bc_manager
         self.lam = lame_lambda
@@ -27,6 +28,9 @@ class P1DGLinearElasticitySolver:
         self.penalty = penalty_param
         self.n_dofs_per_cell = 6
         self.n_dofs = mesh.n_cells * self.n_dofs_per_cell
+        self.linear_solver = linear_solver
+        self.solver_options = dict(solver_options or {})
+        self.last_solve_info = None
 
     def get_indices(self, cell_id):
         """Get DOF indices for displacement components u_x and u_y"""
@@ -456,9 +460,14 @@ class P1DGLinearElasticitySolver:
         print(f"  Shape: {A_csr.shape}")
         print(f"  Nonzeros: {A_csr.nnz}")
         print(f"  Sparsity: {100 * (1 - A_csr.nnz / (A_csr.shape[0] * A_csr.shape[1])):.1f}%")
-        
-        u_dofs = spsolve(A_csr, b)
-        residual = np.linalg.norm(A_csr @ u_dofs - b)
-        print(f"  Solution residual: ||A*u - b||_2 = {residual:.6e}")
+
+        self.last_solve_info = None
+        u_dofs, self.last_solve_info = solve_linear_system(
+            A_csr, b, method=self.linear_solver, **self.solver_options
+        )
+        print(f"  Linear solver: {self.last_solve_info.method}")
+        print(f"  Iterations: {self.last_solve_info.iterations}")
+        print(f"  Solve time: {self.last_solve_info.elapsed_seconds:.3f} s")
+        print(f"  Solution residual: ||A*u - b||_2 = {self.last_solve_info.residual_norm:.6e}")
         
         return u_dofs
