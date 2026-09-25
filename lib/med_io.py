@@ -10,12 +10,38 @@ except ImportError:
     raise
 
 import numpy as np
-from .polygonal_mesh import PolygonalMesh
+from .polygonal_mesh import PolygonalMesh, PolyhedralMesh
+
+
+def _polyhedral_mesh_from_medcoupling(umesh):
+    """Convert a 3D MEDCoupling mesh using its descending face connectivity."""
+    face_mesh, descending, descending_index, _, _ = umesh.buildDescendingConnectivity()
+    face_ids = np.asarray(descending.toNumPyArray(), dtype=int).ravel()
+    offsets = np.asarray(descending_index.toNumPyArray(), dtype=int).ravel()
+    faces = [
+        list(face_mesh.getNodeIdsOfCell(face_id))
+        for face_id in range(face_mesh.getNumberOfCells())
+    ]
+    cells = [
+        [faces[face_id] for face_id in face_ids[offsets[cell_id]:offsets[cell_id + 1]]]
+        for cell_id in range(umesh.getNumberOfCells())
+    ]
+    vertices = umesh.getCoords().toNumPyArray()[:, :3]
+    poly_mesh = PolyhedralMesh(vertices, cells)
+    poly_face_ids = {
+        tuple(sorted(face)): face_id
+        for face_id, face in enumerate(poly_mesh.faces)
+    }
+    poly_mesh.med_face_to_face = {
+        med_face_id: poly_face_ids[tuple(sorted(face))]
+        for med_face_id, face in enumerate(faces)
+    }
+    return poly_mesh
 
 
 def load_med_mesh_mc(filename, mesh_name=None, mesh_level=0):
     """
-    Load a 2D mesh from a MED file using MEDCoupling.
+    Load a 2D or 3D mesh from a MED file using MEDCoupling.
     
     Parameters:
     -----------
@@ -28,8 +54,8 @@ def load_med_mesh_mc(filename, mesh_name=None, mesh_level=0):
     
     Returns:
     --------
-    PolygonalMesh
-        A PolygonalMesh object containing vertices, cells, and boundary edges
+    PolygonalMesh or PolyhedralMesh
+        A mesh containing polygons in 2D or planar-faced polyhedra in 3D.
     """
     # Read the MED file
     med_mesh = mc.MEDFileMesh.New(filename)
@@ -47,7 +73,17 @@ def load_med_mesh_mc(filename, mesh_name=None, mesh_level=0):
     umesh.mergeNodes(1e-10)
     print(f"Nodes after merge: {umesh.getNumberOfNodes()}")
     
-    # Extract coordinates (only 2D)
+    mesh_dimension = umesh.getMeshDimension()
+    if mesh_dimension not in (2, 3):
+        raise ValueError(f"Only 2D and 3D MED meshes are supported, got dimension {mesh_dimension}")
+
+    if mesh_dimension == 3:
+        poly_mesh = _polyhedral_mesh_from_medcoupling(umesh)
+        print(f"Loaded {poly_mesh.n_vertices} vertices and {poly_mesh.n_cells} cells")
+        print(f"Identified {len(poly_mesh.boundary_faces)} boundary faces")
+        return poly_mesh
+
+    # Extract coordinates for a 2D mesh.
     coords = umesh.getCoords()
     vertices = coords.toNumPyArray()[:, :2]
     
@@ -123,6 +159,9 @@ def load_med_mesh_with_groups(filename, mesh_name=None, mesh_level=0):
     except:
         print("No groups found in mesh")
     
+    if umesh.getMeshDimension() == 3:
+        return _polyhedral_mesh_from_medcoupling(umesh), groups
+
     # Convert to PolygonalMesh
     coords = umesh.getCoords()
     vertices = coords.toNumPyArray()[:, :2]
@@ -189,7 +228,36 @@ def extract_edge_groups_from_med(filename, mesh_name=None):
     umesh = med_mesh.getMeshAtLevel(0)
     umesh.mergeNodes(1e-10)
     
-    # Build edge to index mapping from volume mesh
+    if umesh.getMeshDimension() == 3:
+        poly_mesh = _polyhedral_mesh_from_medcoupling(umesh)
+        face_mesh, _, _, _, _ = umesh.buildDescendingConnectivity()
+        face_to_idx = {
+            tuple(sorted(face_mesh.getNodeIdsOfCell(face_id))):
+                poly_mesh.med_face_to_face[face_id]
+            for face_id in range(face_mesh.getNumberOfCells())
+        }
+        face_groups = {}
+        try:
+            group_names = med_mesh.getGroupsNames()
+            print(f"Found boundary groups: {group_names}")
+            for group_name in group_names:
+                try:
+                    boundary_cell_ids = med_mesh.getGroupArr(-1, group_name).toNumPyArray()
+                    indices = []
+                    for boundary_cell_id in boundary_cell_ids:
+                        key = tuple(sorted(boundary_mesh.getNodeIdsOfCell(int(boundary_cell_id))))
+                        if key in face_to_idx:
+                            indices.append(face_to_idx[key])
+                    face_groups[group_name] = np.asarray(indices, dtype=int)
+                    print(f"  Group '{group_name}': {len(indices)} faces")
+                except Exception as error:
+                    print(f"  Could not load group '{group_name}': {error}")
+            return face_groups
+        except Exception as error:
+            print(f"Error reading groups: {error}")
+            return {}
+
+    # Build edge to index mapping from a 2D volume mesh
     edge_to_idx = {}
     edge_list = []
     
@@ -238,6 +306,20 @@ def extract_edge_groups_from_med(filename, mesh_name=None):
         print(f"Error reading groups: {e}")
     
     return edge_groups
+
+
+def extract_face_groups_from_med(filename, mesh_name=None):
+    """Extract named boundary-face groups from a 3D MED mesh.
+
+    This is the dimension-specific spelling of ``extract_edge_groups_from_med``;
+    the underlying routine detects mesh dimension and returns the corresponding
+    boundary-entity indices.
+    """
+    groups = extract_edge_groups_from_med(filename, mesh_name)
+    med_mesh = mc.MEDFileMesh.New(filename)
+    if med_mesh.getMeshAtLevel(0).getMeshDimension() != 3:
+        raise ValueError("extract_face_groups_from_med requires a 3D MED mesh")
+    return groups
 
 def _project_cell_data_to_nodes(cell_data, mesh):
     """
@@ -295,11 +377,14 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
                                                np.array([mesh.cell_centroid(i) for i in range(mesh.n_cells)]), 
                                                np.arange(mesh.n_cells), component=component)
     
-    # 1. Recovery with Area Weighting
-    grad_recovered_vertices = np.zeros((mesh.n_vertices, 2))
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
+    measure = mesh.cell_area if dimension == 2 else mesh.cell_volume
+
+    # 1. Recovery with area/volume weighting
+    grad_recovered_vertices = np.zeros((mesh.n_vertices, dimension))
     v_weights = np.zeros(mesh.n_vertices)
     for cid, cell in enumerate(mesh.cells):
-        a = mesh.cell_area(cid)
+        a = measure(cid)
         for vid in cell:
             grad_recovered_vertices[vid] += grad_element[cid] * a
             v_weights[vid] += a
@@ -312,7 +397,7 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
         diffs = grad_recovered_vertices[cell] - grad_element[cid]
         # L2 norm of the difference averaged over vertices
         l2_diff_sq = np.mean(np.sum(diffs**2, axis=1)) 
-        zz_error[cid] = l2_diff_sq * mesh.cell_area(cid)
+        zz_error[cid] = l2_diff_sq * measure(cid)
     
     return zz_error
 
@@ -494,13 +579,14 @@ def _export_med_multi(solver, u_dofs, filename, fields):
     else:
         coords_mc.setInfoOnComponents(["X", "Y", "Z"])
     
-    umesh = mc.MEDCouplingUMesh("solution_mesh", 2)
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
+    umesh = mc.MEDCouplingUMesh("solution_mesh", dimension)
     umesh.setCoords(coords_mc)
     
     # Group cells by type
     cells_by_type = {}
     for cell_id, cell in enumerate(mesh.cells):
-        cell_type = mc.NORM_POLYGON
+        cell_type = mc.NORM_POLYGON if dimension == 2 else mc.NORM_POLYHED
         
         if cell_type not in cells_by_type:
             cells_by_type[cell_type] = []
@@ -511,9 +597,18 @@ def _export_med_multi(solver, u_dofs, filename, fields):
     umesh.allocateCells(mesh.n_cells)
     for cell_type in sorted(cells_by_type.keys()):
         for cell_id, cell in cells_by_type[cell_type]:
-            umesh.insertNextCell(cell_type, cell)
+            if dimension == 2:
+                connectivity = cell
+            else:
+                connectivity = []
+                for face_number, face in enumerate(mesh.oriented_cell_faces(cell_id)):
+                    if face_number:
+                        connectivity.append(-1)
+                    connectivity.extend(face)
+            umesh.insertNextCell(cell_type, connectivity)
             cell_mapping.append(cell_id)
     umesh.finishInsertingCells()
+    umesh.checkConsistencyLight()
     
     # Write mesh to file
     med_mesh = mc.MEDFileUMesh()
@@ -555,13 +650,14 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
     grad_data = {}
     grad_mag_data = {}
     zz_estimator_data = {}
-    cell_centroids = np.zeros((mesh.n_cells, 2))
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
+    cell_centroids = np.zeros((mesh.n_cells, dimension))
     
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_cells)
             if field_spec["gradient"]:
-                grad_data[field_name] = np.zeros((mesh.n_cells, 2))
+                grad_data[field_name] = np.zeros((mesh.n_cells, dimension))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_cells)
             if field_spec["zz_estimator"]:
@@ -571,7 +667,7 @@ def _export_med_fields_cells(solver, u_dofs, filename, umesh, cell_mapping, fiel
             field_data[field_name] = np.zeros((mesh.n_cells, n_components))
     
     # Compute cell centroids once
-    cell_centroids = np.zeros((mesh.n_cells, 2))
+    cell_centroids = np.zeros((mesh.n_cells, dimension))
     for cell_id in range(mesh.n_cells):
         cell_centroids[cell_id] = mesh.cell_centroid(cell_id)
     cell_ids = np.arange(mesh.n_cells)
@@ -728,13 +824,14 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
     grad_data = {}
     grad_mag_data = {}
     zz_estimator_data = {}
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
     vertex_count = np.zeros(mesh.n_vertices)
     
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_vertices)
             if field_spec["gradient"]:
-                grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
+                grad_data[field_name] = np.zeros((mesh.n_vertices, dimension))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
             if field_spec["zz_estimator"]:
@@ -778,7 +875,7 @@ def _export_med_fields_nodes(solver, u_dofs, filename, umesh, fields):
             cell_gradients = _compute_gradients_numerical(solver, u_dofs, cell_centroids, np.arange(mesh.n_cells), component=component_idx)
             
             # Average cell gradients to vertices
-            vertex_gradients = np.zeros((mesh.n_vertices, 2))
+            vertex_gradients = np.zeros((mesh.n_vertices, dimension))
             vertex_grad_count = np.zeros(mesh.n_vertices)
             
             for cell_id, cell in enumerate(mesh.cells):
@@ -1297,36 +1394,23 @@ def _compute_gradients_numerical(solver, u_dofs, points, cell_ids, component=Non
     gradients : array of shape (n, 2)
         Gradients [du/dx, du/dy] at each point
     """
-    n_points = len(points)
-    gradients = np.zeros((n_points, 2))
-    
+    dimension = getattr(solver.mesh, "dimension", solver.mesh.vertices.shape[1])
+    gradients = np.zeros((len(points), dimension))
+
+    def scalar_component(value):
+        if isinstance(value, (tuple, list, np.ndarray)):
+            values = np.atleast_1d(value)
+            return values[0 if component is None else component]
+        return value
+
     for i, (pt, cell_id) in enumerate(zip(points, cell_ids)):
-        # Compute gradient using central differences
-        x, y = pt
-        
-        # Evaluate at displaced points
-        u_x_plus = solver.evaluate_solution(u_dofs, np.array([x + delta, y]), cell_id)
-        u_x_minus = solver.evaluate_solution(u_dofs, np.array([x - delta, y]), cell_id)
-        u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
-        u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
-        
-        # Extract component if multi-component solution
-        if component is not None:
-            if isinstance(u_x_plus, tuple):
-                u_x_plus = u_x_plus[component]
-            if isinstance(u_x_minus, tuple):
-                u_x_minus = u_x_minus[component]
-            if isinstance(u_y_plus, tuple):
-                u_y_plus = u_y_plus[component]
-            if isinstance(u_y_minus, tuple):
-                u_y_minus = u_y_minus[component]
-        
-        # Compute derivatives
-        du_dx = (u_x_plus - u_x_minus) / (2 * delta)
-        du_dy = (u_y_plus - u_y_minus) / (2 * delta)
-        
-        gradients[i, 0] = du_dx
-        gradients[i, 1] = du_dy
+        pt = np.asarray(pt, dtype=float)
+        for direction in range(dimension):
+            offset = np.zeros(dimension)
+            offset[direction] = delta
+            plus = scalar_component(solver.evaluate_solution(u_dofs, pt + offset, cell_id))
+            minus = scalar_component(solver.evaluate_solution(u_dofs, pt - offset, cell_id))
+            gradients[i, direction] = (plus - minus) / (2.0 * delta)
     
     return gradients
 

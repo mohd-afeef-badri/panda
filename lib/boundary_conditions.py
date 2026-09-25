@@ -20,14 +20,14 @@ class BoundaryCondition:
         self.value_func = value_func
         self.is_vector = is_vector
     
-    def evaluate(self, x, y):
-        """Evaluate the boundary condition at point (x, y)"""
-        return self.value_func(x, y)
+    def evaluate(self, *coordinates):
+        """Evaluate the boundary condition at a 2D or 3D point."""
+        return self.value_func(*coordinates)
 
 
 class BoundaryConditionManager:
-    """Manages boundary conditions for different edge groups or analytical regions"""
-    def __init__(self, mesh, edge_groups=None):
+    """Manage boundary conditions on 2D edges or 3D faces."""
+    def __init__(self, mesh, edge_groups=None, face_groups=None):
         """
         Parameters:
         -----------
@@ -39,11 +39,17 @@ class BoundaryConditionManager:
             If None, only analytical boundary detection will be used
         """
         self.mesh = mesh
-        self.edge_groups = edge_groups if edge_groups is not None else {}
+        if edge_groups is not None and face_groups is not None:
+            raise ValueError("Pass either edge_groups or face_groups, not both")
+        self.edge_groups = (
+            face_groups if face_groups is not None
+            else edge_groups if edge_groups is not None
+            else {}
+        )
         self.conditions = {}
         self.analytical_conditions = []
         self.global_boundary_condition = None  # For all boundaries
-        self.default_dirichlet = BoundaryCondition('dirichlet', lambda x, y: 0.0)
+        self.default_dirichlet = BoundaryCondition('dirichlet', lambda *coordinates: 0.0)
         
         # Map each boundary edge to its group
         self.edge_to_group = {}
@@ -69,12 +75,16 @@ class BoundaryConditionManager:
        """
        if isinstance(value_func, (int, float)):
            const_val = value_func
-           value_func = lambda x, y, v=const_val: v
-       elif isinstance(value_func, tuple) and len(value_func) == 2:
+           value_func = lambda *coordinates, v=const_val: v
+       elif isinstance(value_func, tuple):
            const_vals = value_func
-           value_func = lambda x, y, v=const_vals: v
+           value_func = lambda *coordinates, v=const_vals: v
 
        self.conditions[group_name] = BoundaryCondition(bc_type, value_func, is_vector)
+
+    def add_bc_by_face_group(self, group_name, bc_type, value_func, is_vector=False):
+        """3D spelling of :meth:`add_bc_by_group`."""
+        self.add_bc_by_group(group_name, bc_type, value_func, is_vector)
 
     def add_bc_by_function(self, region_func, bc_type, value_func, name=None, tolerance=1e-10, is_vector=False):
         """
@@ -97,10 +107,10 @@ class BoundaryConditionManager:
         """
         if isinstance(value_func, (int, float)):
             const_val = value_func
-            value_func = lambda x, y, v=const_val: v
-        elif isinstance(value_func, tuple) and len(value_func) == 2:
+            value_func = lambda *coordinates, v=const_val: v
+        elif isinstance(value_func, tuple):
             const_vals = value_func
-            value_func = lambda x, y, v=const_vals: v
+            value_func = lambda *coordinates, v=const_vals: v
 
         bc = BoundaryCondition(bc_type, value_func, is_vector)
         self.analytical_conditions.append((region_func, bc, name, tolerance))
@@ -123,10 +133,10 @@ class BoundaryConditionManager:
         """
         if isinstance(value_func, (int, float)):
             const_val = value_func
-            value_func = lambda x, y, v=const_val: v
-        elif isinstance(value_func, tuple) and len(value_func) == 2:
+            value_func = lambda *coordinates, v=const_val: v
+        elif isinstance(value_func, tuple):
             const_vals = value_func
-            value_func = lambda x, y, v=const_vals: v
+            value_func = lambda *coordinates, v=const_vals: v
 
         self.global_boundary_condition = BoundaryCondition(bc_type, value_func, is_vector)
         print(f"Set global boundary condition: {bc_type}")
@@ -155,12 +165,14 @@ class BoundaryConditionManager:
                 return bc
         
         # Check analytical conditions
-        edge_mid = self.mesh.edge_midpoint(edge_id)
-        x, y = edge_mid[0], edge_mid[1]
+        if getattr(self.mesh, "dimension", 2) == 3:
+            edge_mid = self.mesh.face_centroid(edge_id)
+        else:
+            edge_mid = self.mesh.edge_midpoint(edge_id)
         
         for region_func, bc, name, tol in self.analytical_conditions:
             try:
-                if region_func(x, y):
+                if region_func(*edge_mid):
                     return bc
             except:
                 # If region_func fails, skip this condition

@@ -10,6 +10,7 @@ import manufactured_solutions as manufactured_solutions
 from panda.lib import med_io
 from panda.lib import polygonal_mesh
 from panda.lib import boundary_conditions
+from panda.lib.linear_solvers import solve_linear_system
 
 def test_p1dg_poisson_accuracy():
     print("Testing P1 DG Poisson Solver Accuracy on Boundary Layer Problem")
@@ -663,6 +664,26 @@ def _solve_poisson_with_krylov(method, solver_options):
     )
     krylov_solution = solver.solve(source)
     return direct_solution, krylov_solution, solver
+
+
+def test_linear_solver_verbose_prints_iteration_residuals(capsys):
+    A = np.array([[4.0, -1.0], [-1.0, 3.0]], dtype=float)
+    b = np.array([1.0, 2.0], dtype=float)
+
+    solution, info = solve_linear_system(
+        A,
+        b,
+        method="cg",
+        rtol=1e-10,
+        maxiter=10,
+        verbose=True,
+    )
+
+    captured = capsys.readouterr().out
+    assert solution.shape == b.shape
+    assert info.converged
+    assert "Krylov iteration" in captured
+    assert "residual" in captured.lower()
 
 
 def test_poisson_cg_matches_direct_solver():

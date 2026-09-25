@@ -151,6 +151,7 @@ def solve_linear_system(
     preconditioner_options=None,
     x0=None,
     restart=None,
+    verbose=False,
 ):
     """Solve ``A x = b`` using a direct or Krylov method.
 
@@ -196,8 +197,28 @@ def solve_linear_system(
         nonlocal iterations
         iterations += 1
 
+    def print_iteration(*args):
+        nonlocal iterations
+        iterations += 1
+        if not verbose:
+            return
+
+        residual = None
+        if args:
+            candidate = args[0]
+            if np.isscalar(candidate):
+                residual = float(candidate)
+            elif np.asarray(candidate).ndim > 0:
+                residual = float(np.linalg.norm(A @ candidate - b))
+
+        if residual is None:
+            residual = float(np.linalg.norm(A @ solution - b)) if "solution" in globals() else 0.0
+
+        print(f"  Krylov iteration {iterations}: residual ||A x - b||_2 = {residual:.6e}")
+
+    callback = print_iteration if verbose else count_iteration
     kwargs = _tolerance_kwargs(krylov_method, rtol, atol)
-    kwargs.update({"maxiter": maxiter, "M": M, "x0": x0, "callback": count_iteration})
+    kwargs.update({"maxiter": maxiter, "M": M, "x0": x0, "callback": callback})
     if method_name == "gmres":
         kwargs["restart"] = restart
         if "callback_type" in inspect.signature(gmres).parameters:
