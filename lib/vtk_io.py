@@ -2,7 +2,16 @@
 
 from pathlib import Path
 import numpy as np
-from .med_io import load_med_mesh_mc, _project_cell_data_to_nodes
+
+
+def _project_cell_data_to_nodes(cell_data, mesh):
+    node_data = np.zeros(mesh.n_vertices)
+    node_count = np.zeros(mesh.n_vertices)
+    for cell_id, cell in enumerate(mesh.cells):
+        for vertex_id in cell:
+            node_data[vertex_id] += cell_data[cell_id]
+            node_count[vertex_id] += 1
+    return node_data / np.maximum(node_count, 1)
 
 
 def export_solution(solver, u_dofs, filename="solution.vtk", fields=None):
@@ -142,35 +151,23 @@ def _compute_gradients_numerical_vtk(solver, u_dofs, points, cell_ids, component
     gradients : array of shape (n, 2)
         Gradients [du/dx, du/dy] at each point
     """
-    n_points = len(points)
-    gradients = np.zeros((n_points, 2))
-    
+    dimension = getattr(solver.mesh, "dimension", solver.mesh.vertices.shape[1])
+    gradients = np.zeros((len(points), dimension))
+
+    def scalar_component(value):
+        if isinstance(value, (tuple, list, np.ndarray)):
+            values = np.atleast_1d(value)
+            return values[0 if component is None else component]
+        return value
+
     for i, (pt, cell_id) in enumerate(zip(points, cell_ids)):
-        x, y = pt
-        
-        # Evaluate at displaced points
-        u_x_plus = solver.evaluate_solution(u_dofs, np.array([x + delta, y]), cell_id)
-        u_x_minus = solver.evaluate_solution(u_dofs, np.array([x - delta, y]), cell_id)
-        u_y_plus = solver.evaluate_solution(u_dofs, np.array([x, y + delta]), cell_id)
-        u_y_minus = solver.evaluate_solution(u_dofs, np.array([x, y - delta]), cell_id)
-        
-        # Extract requested component if multi-component solution
-        if component is not None and isinstance(u_x_plus, (tuple, list, np.ndarray)):
-            u_x_plus = u_x_plus[component]
-            u_x_minus = u_x_minus[component]
-            u_y_plus = u_y_plus[component]
-            u_y_minus = u_y_minus[component]
-        elif isinstance(u_x_plus, (tuple, list, np.ndarray)):
-            u_x_plus = u_x_plus[0]
-            u_x_minus = u_x_minus[0]
-            u_y_plus = u_y_plus[0]
-            u_y_minus = u_y_minus[0]
-        
-        du_dx = (u_x_plus - u_x_minus) / (2 * delta)
-        du_dy = (u_y_plus - u_y_minus) / (2 * delta)
-        
-        gradients[i, 0] = du_dx
-        gradients[i, 1] = du_dy
+        pt = np.asarray(pt, dtype=float)
+        for direction in range(dimension):
+            offset = np.zeros(dimension)
+            offset[direction] = delta
+            plus = scalar_component(solver.evaluate_solution(u_dofs, pt + offset, cell_id))
+            minus = scalar_component(solver.evaluate_solution(u_dofs, pt - offset, cell_id))
+            gradients[i, direction] = (plus - minus) / (2.0 * delta)
     
     return gradients
 
@@ -206,11 +203,14 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
         component=component,
     )
 
-    # 1. Recovery with area weighting
-    grad_recovered_vertices = np.zeros((mesh.n_vertices, 2))
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
+    measure = mesh.cell_area if dimension == 2 else mesh.cell_volume
+
+    # 1. Recovery with area/volume weighting
+    grad_recovered_vertices = np.zeros((mesh.n_vertices, dimension))
     v_weights = np.zeros(mesh.n_vertices)
     for cid, cell in enumerate(mesh.cells):
-        a = mesh.cell_area(cid)
+        a = measure(cid)
         for vid in cell:
             grad_recovered_vertices[vid] += grad_element[cid] * a
             v_weights[vid] += a
@@ -221,7 +221,7 @@ def _compute_zz_estimator(solver, u_dofs, component=0):
     for cid, cell in enumerate(mesh.cells):
         diffs = grad_recovered_vertices[cell] - grad_element[cid]
         l2_diff_sq = np.mean(np.sum(diffs**2, axis=1))
-        zz_error[cid] = l2_diff_sq * mesh.cell_area(cid)
+        zz_error[cid] = l2_diff_sq * measure(cid)
 
     return zz_error
 
@@ -272,13 +272,14 @@ def _export_vtk_p0(solver, u_dofs, filename, fields):
     grad_data = {}
     grad_mag_data = {}
     zz_estimator_data = {}
-    cell_centroids = np.zeros((mesh.n_cells, 2))
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
+    cell_centroids = np.zeros((mesh.n_cells, dimension))
     
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_cells)
             if field_spec["gradient"]:
-                grad_data[field_name] = np.zeros((mesh.n_cells, 2))
+                grad_data[field_name] = np.zeros((mesh.n_cells, dimension))
             if field_spec["gradient_magnitude"]:
                 grad_mag_data[field_name] = np.zeros(mesh.n_cells)
             if field_spec["zz_estimator"]:
@@ -333,13 +334,14 @@ def _export_vtk_p1_vertex(solver, u_dofs, filename, fields):
     grad_data = {}
     grad_mag_data = {}
     zz_estimator_data = {}
+    dimension = getattr(mesh, "dimension", mesh.vertices.shape[1])
     vertex_count = np.zeros(mesh.n_vertices)
     
     for field_name, field_spec in fields.items():
         if field_spec["type"] == "scalar":
             field_data[field_name] = np.zeros(mesh.n_vertices)
             if field_spec.get("gradient", False):
-                grad_data[field_name] = np.zeros((mesh.n_vertices, 2))
+                grad_data[field_name] = np.zeros((mesh.n_vertices, dimension))
             if field_spec.get("gradient_magnitude", False):
                 grad_mag_data[field_name] = np.zeros(mesh.n_vertices)
             if field_spec.get("zz_estimator", False):
@@ -445,18 +447,32 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
         # Points
         f.write(f"POINTS {mesh.n_vertices} double\n")
         for v in mesh.vertices:
-            f.write(f"{v[0]} {v[1]} 0.0\n")
+            if len(v) == 2:
+                f.write(f"{v[0]} {v[1]} 0.0\n")
+            else:
+                f.write(f"{v[0]} {v[1]} {v[2]}\n")
 
         # Cells
-        total_size = sum(len(cell) + 1 for cell in mesh.cells)
+        if getattr(mesh, "dimension", 2) == 3:
+            cell_records = []
+            for cell_id in range(mesh.n_cells):
+                face_stream = [len(mesh.cell_to_faces[cell_id])]
+                for face in mesh.oriented_cell_faces(cell_id):
+                    face_stream.extend([len(face), *face])
+                cell_records.append([len(face_stream), *face_stream])
+        else:
+            cell_records = [[len(cell), *cell] for cell in mesh.cells]
+
+        total_size = sum(len(record) for record in cell_records)
         f.write(f"\nCELLS {mesh.n_cells} {total_size}\n")
-        for cell in mesh.cells:
-            f.write(f"{len(cell)} " + " ".join(map(str, cell)) + "\n")
+        for record in cell_records:
+            f.write(" ".join(map(str, record)) + "\n")
 
         # Cell types
         f.write(f"\nCELL_TYPES {mesh.n_cells}\n")
-        for cell in mesh.cells:
-            f.write(f"7\n")
+        vtk_cell_type = 42 if getattr(mesh, "dimension", 2) == 3 else 7
+        for _ in mesh.cells:
+            f.write(f"{vtk_cell_type}\n")
 
         # Data section header
         if data_location == "POINT":
@@ -493,8 +509,10 @@ def _write_vtk_file(mesh, filename, fields, field_data, grad_data=None, grad_mag
             f.write(f"VECTORS {field_name}_gradient double\n")
             for i in range(len(grad)):
                 g = grad[i]
-                # 2D gradient, pad to 3D for VTK
-                f.write(f"{g[0]} {g[1]} 0.0\n")
+                if len(g) == 2:
+                    f.write(f"{g[0]} {g[1]} 0.0\n")
+                else:
+                    f.write(f"{g[0]} {g[1]} {g[2]}\n")
         
         # Write gradient magnitude fields if present
         for field_name in grad_mag_data:
@@ -539,6 +557,7 @@ def project_and_export_to_triangular_mesh_vtk(solver, u_dofs, tria_mesh_file,
         fields = {"u": {"type": "scalar", "components": [0]}}
     
     # Load triangular mesh
+    from .med_io import load_med_mesh_mc
     print(f"Loading triangular mesh from {tria_mesh_file}...")
     tria_mesh = load_med_mesh_mc(tria_mesh_file)
 
