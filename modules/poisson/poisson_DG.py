@@ -11,16 +11,21 @@ from panda.lib.linear_solvers import solve_linear_system
 
 class P1DGPoissonSolver:
     """
-    P1 DG solver for -Δu = f with Dirichlet BC using SIPG method
-    Uses piecewise linear approximation on each cell
-    For each cells: 3 DOFs per cell (constant + x + y gradient)
+    P1 DG solver for ``-Delta u = f`` using the SIPG method in 2D or 3D.
+
+    The local basis is centered at each cell centroid.  It contains one
+    constant and one linear function per coordinate, so there are three DOFs
+    per polygon in 2D and four DOFs per polyhedron in 3D.
     """
     def __init__(self, mesh, bc_manager, penalty_param=10.0,
                  linear_solver="direct", solver_options=None):
         self.mesh = mesh
         self.bc_manager = bc_manager
         self.penalty = penalty_param
-        self.n_dofs_per_cell = 3  # P1 in 2D: [1, x, y]
+        self.dimension = getattr(mesh, "dimension", np.asarray(mesh.vertices).shape[1])
+        if self.dimension not in (2, 3):
+            raise ValueError("P1DGPoissonSolver supports only 2D and 3D meshes")
+        self.n_dofs_per_cell = self.dimension + 1
         self.n_dofs = mesh.n_cells * self.n_dofs_per_cell
         self.linear_solver = linear_solver
         self.solver_options = dict(solver_options or {})
@@ -32,22 +37,68 @@ class P1DGPoissonSolver:
     
     def evaluate_basis(self, cell_id, point, derivatives=False):
         """
-        Evaluate P1 basis functions at a point
-        Basis: phi_0 = 1, phi_1 = x - x_c, phi_2 = y - y_c
-        where (x_c, y_c) is cell centroid
+        Evaluate the centroid-based P1 basis at a point.
+
+        With ``derivatives=True``, the return value is ``(values, *grads)``:
+        three arrays in 2D and four arrays in 3D.  This retains the original
+        2D API while naturally adding the z derivative.
         """
-        cent = self.mesh.cell_centroid(cell_id)
-        x_rel = point[0] - cent[0]
-        y_rel = point[1] - cent[1]
-        
+        cent = np.asarray(self.mesh.cell_centroid(cell_id), dtype=float)
+        point = np.asarray(point, dtype=float)
+        vals = np.concatenate(([1.0], point[:self.dimension] - cent[:self.dimension]))
+
         if not derivatives:
-            return np.array([1.0, x_rel, y_rel])
-        else:
-            # Return [values, grad_x, grad_y]
-            vals = np.array([1.0, x_rel, y_rel])
-            grad_x = np.array([0.0, 1.0, 0.0])
-            grad_y = np.array([0.0, 0.0, 1.0])
-            return vals, grad_x, grad_y
+            return vals
+
+        gradients = np.zeros((self.n_dofs_per_cell, self.dimension))
+        gradients[1:, :] = np.eye(self.dimension)
+        return (vals, *(gradients[:, direction] for direction in range(self.dimension)))
+
+    def _basis_and_gradients(self, cell_id, point):
+        evaluated = self.evaluate_basis(cell_id, point, derivatives=True)
+        return evaluated[0], np.column_stack(evaluated[1:])
+
+    def _cell_measure(self, cell_id):
+        if self.dimension == 2:
+            return self.mesh.cell_area(cell_id)
+        return self.mesh.cell_volume(cell_id)
+
+    def _face_data(self, face_id):
+        """Return adjacent cells, measure, and representative point."""
+        if self.dimension == 2:
+            edge = self.mesh.edges[face_id]
+            return (
+                self.mesh.edge_to_cells[edge],
+                self.mesh.edge_length(face_id),
+                self.mesh.edge_midpoint(face_id),
+            )
+        face = self.mesh.faces[face_id]
+        return (
+            self.mesh.face_to_cells[tuple(sorted(face))],
+            self.mesh.face_area(face_id),
+            self.mesh.face_centroid(face_id),
+        )
+
+    def _normal(self, face_id, cell_id):
+        if self.dimension == 2:
+            return self.mesh.edge_normal(face_id, cell_id)
+        return self.mesh.face_normal(face_id, cell_id)
+
+    def _face_quadrature(self, face_id, measure, midpoint):
+        # Preserve the original edge-midpoint assembly exactly in 2D.  In 3D,
+        # degree-two polygon quadrature exactly integrates all P1 face terms.
+        if self.dimension == 2:
+            return [(np.asarray(midpoint), measure)]
+        if hasattr(self.mesh, "face_quadrature"):
+            points, weights = self.mesh.face_quadrature(face_id)
+            return list(zip(points, weights))
+        return [(np.asarray(midpoint), measure)]
+
+    def _cell_quadrature(self, cell_id, measure, centroid):
+        if self.dimension == 3 and hasattr(self.mesh, "cell_quadrature"):
+            points, weights = self.mesh.cell_quadrature(cell_id)
+            return list(zip(points, weights))
+        return [(np.asarray(centroid), measure)]
     
     def assemble_system(self, f_func):
         """
@@ -62,39 +113,38 @@ class P1DGPoissonSolver:
         Parameters:
         -----------
         f_func : callable
-            Source term f(x, y)
+            Source term ``f(x, y)`` in 2D or ``f(x, y, z)`` in 3D.
         """
         A = lil_matrix((self.n_dofs, self.n_dofs))
         b = np.zeros(self.n_dofs)
         
         # Assemble volume terms: (∇v, ∇u)_K
         for cell_id in range(self.mesh.n_cells):
-            area = self.mesh.cell_area(cell_id)
+            measure = self._cell_measure(cell_id)
             cent = self.mesh.cell_centroid(cell_id)
             
             # Load vector
-            phi = self.evaluate_basis(cell_id, cent)
-            f_val = f_func(cent[0], cent[1])
-            
-            for i in range(self.n_dofs_per_cell):
-                i_global = self.local_to_global(cell_id, i)
-                b[i_global] += f_val * phi[i] * area
+            for point, weight in self._cell_quadrature(cell_id, measure, cent):
+                phi = self.evaluate_basis(cell_id, point)
+                f_val = f_func(*point)
+                for i in range(self.n_dofs_per_cell):
+                    i_global = self.local_to_global(cell_id, i)
+                    b[i_global] += f_val * phi[i] * weight
             
             # Stiffness matrix: ∫ ∇φ_i · ∇φ_j dx
-            _, grad_x, grad_y = self.evaluate_basis(cell_id, cent, derivatives=True)
+            _, gradients = self._basis_and_gradients(cell_id, cent)
             
             for i in range(self.n_dofs_per_cell):
                 for j in range(self.n_dofs_per_cell):
                     i_global = self.local_to_global(cell_id, i)
                     j_global = self.local_to_global(cell_id, j)
-                    stiff = (grad_x[i]*grad_x[j] + grad_y[i]*grad_y[j]) * area
+                    stiff = np.dot(gradients[i], gradients[j]) * measure
                     A[i_global, j_global] += stiff
         
         # Assemble face terms (SIPG)
-        for edge_id in range(len(self.mesh.edges)):
-            cells = self.mesh.edge_to_cells[self.mesh.edges[edge_id]]
-            h_e = self.mesh.edge_length(edge_id)
-            edge_mid = self.mesh.edge_midpoint(edge_id)
+        n_faces = len(self.mesh.edges) if self.dimension == 2 else len(self.mesh.faces)
+        for edge_id in range(n_faces):
+            cells, h_e, edge_mid = self._face_data(edge_id)
             
             if len(cells) == 2:  # Interior edge
                 self._assemble_interior_face(A, edge_id, cells, h_e, edge_mid)
@@ -110,96 +160,76 @@ class P1DGPoissonSolver:
     def _assemble_interior_face(self, A, edge_id, cells, h_e, edge_mid):
         """Assemble interior face terms (SIPG)"""
         cell_i, cell_j = cells
-        n = self.mesh.edge_normal(edge_id, cell_i)
-        
-        # Evaluate basis functions
-        phi_i, grad_x_i, grad_y_i = self.evaluate_basis(cell_i, edge_mid, derivatives=True)
-        phi_j, grad_x_j, grad_y_j = self.evaluate_basis(cell_j, edge_mid, derivatives=True)
-        
-        # Normal gradients
-        grad_n_i = grad_x_i * n[0] + grad_y_i * n[1]
-        grad_n_j = grad_x_j * n[0] + grad_y_j * n[1]
-        
+        n = self._normal(edge_id, cell_i)
+
         # Penalty parameter σ = γ/h
         h = min(self.mesh.cell_diameter(cell_i), self.mesh.cell_diameter(cell_j))
         sigma = self.penalty / h
-        
-        # SIPG bilinear form on interior faces
-        # Note: [[u]] = u_i - u_j (jump), {∇u}·n = 0.5*(∇u_i + ∇u_j)·n (average)
-        for i in range(self.n_dofs_per_cell):
-            for j in range(self.n_dofs_per_cell):
-                i_i = self.local_to_global(cell_i, i)
-                j_i = self.local_to_global(cell_i, j)
-                i_j = self.local_to_global(cell_j, i)
-                j_j = self.local_to_global(cell_j, j)
-                
-                # Jump [[v]] = v_i - v_j, [[u]] = u_i - u_j
-                # Average {∇u·n} = 0.5*(∇u_i·n + ∇u_j·n)
-                
-                # Term 1: - <[[v]], {∇u·n}> = - <v_i - v_j, 0.5(∇u_i·n + ∇u_j·n)>
-                term1_ii = -0.5 * phi_i[i] * grad_n_i[j] * h_e
-                term1_ij = -0.5 * phi_i[i] * grad_n_j[j] * h_e
-                term1_ji = 0.5 * phi_j[i] * grad_n_i[j] * h_e
-                term1_jj = 0.5 * phi_j[i] * grad_n_j[j] * h_e
-                
-                # Term 2: - <{∇v·n}, [[u]]> = - <0.5(∇v_i·n + ∇v_j·n), u_i - u_j>
-                term2_ii = -0.5 * grad_n_i[i] * phi_i[j] * h_e
-                term2_ij = 0.5 * grad_n_i[i] * phi_j[j] * h_e
-                term2_ji = -0.5 * grad_n_j[i] * phi_i[j] * h_e
-                term2_jj = 0.5 * grad_n_j[i] * phi_j[j] * h_e
-                
-                # Term 3: + <σ[[v]], [[u]]> = <σ(v_i - v_j), u_i - u_j>
-                term3_ii = sigma * phi_i[i] * phi_i[j] * h_e
-                term3_ij = -sigma * phi_i[i] * phi_j[j] * h_e
-                term3_ji = -sigma * phi_j[i] * phi_i[j] * h_e
-                term3_jj = sigma * phi_j[i] * phi_j[j] * h_e
-                
-                A[i_i, j_i] += term1_ii + term2_ii + term3_ii
-                A[i_i, j_j] += term1_ij + term2_ij + term3_ij
-                A[i_j, j_i] += term1_ji + term2_ji + term3_ji
-                A[i_j, j_j] += term1_jj + term2_jj + term3_jj
+
+        for point, weight in self._face_quadrature(edge_id, h_e, edge_mid):
+            phi_i, gradients_i = self._basis_and_gradients(cell_i, point)
+            phi_j, gradients_j = self._basis_and_gradients(cell_j, point)
+            grad_n_i = gradients_i @ n
+            grad_n_j = gradients_j @ n
+
+            for i in range(self.n_dofs_per_cell):
+                for j in range(self.n_dofs_per_cell):
+                    i_i = self.local_to_global(cell_i, i)
+                    j_i = self.local_to_global(cell_i, j)
+                    i_j = self.local_to_global(cell_j, i)
+                    j_j = self.local_to_global(cell_j, j)
+
+                    A[i_i, j_i] += weight * (
+                        -0.5 * phi_i[i] * grad_n_i[j]
+                        -0.5 * grad_n_i[i] * phi_i[j]
+                        +sigma * phi_i[i] * phi_i[j]
+                    )
+                    A[i_i, j_j] += weight * (
+                        -0.5 * phi_i[i] * grad_n_j[j]
+                        +0.5 * grad_n_i[i] * phi_j[j]
+                        -sigma * phi_i[i] * phi_j[j]
+                    )
+                    A[i_j, j_i] += weight * (
+                        +0.5 * phi_j[i] * grad_n_i[j]
+                        -0.5 * grad_n_j[i] * phi_i[j]
+                        -sigma * phi_j[i] * phi_i[j]
+                    )
+                    A[i_j, j_j] += weight * (
+                        +0.5 * phi_j[i] * grad_n_j[j]
+                        +0.5 * grad_n_j[i] * phi_j[j]
+                        +sigma * phi_j[i] * phi_j[j]
+                    )
     
     def _assemble_dirichlet_face(self, A, b, edge_id, cell_i, h_e, edge_mid, bc):
         """Assemble Dirichlet boundary face terms"""
-        n = self.mesh.edge_normal(edge_id, cell_i)
-        phi_i, grad_x_i, grad_y_i = self.evaluate_basis(cell_i, edge_mid, derivatives=True)
-        grad_n_i = grad_x_i * n[0] + grad_y_i * n[1]
-        
+        n = self._normal(edge_id, cell_i)
         h = self.mesh.cell_diameter(cell_i)
         sigma = self.penalty / h
-        
-        g_val = bc.evaluate(edge_mid[0], edge_mid[1])
-        
-        # Boundary terms: [[u]] = u, {∇u·n} = ∇u·n
-        for i in range(self.n_dofs_per_cell):
-            for j in range(self.n_dofs_per_cell):
+
+        for point, weight in self._face_quadrature(edge_id, h_e, edge_mid):
+            phi_i, gradients_i = self._basis_and_gradients(cell_i, point)
+            grad_n_i = gradients_i @ n
+            g_val = bc.evaluate(*point)
+
+            for i in range(self.n_dofs_per_cell):
                 i_i = self.local_to_global(cell_i, i)
-                j_i = self.local_to_global(cell_i, j)
-                
-                # - <v, ∇u·n>
-                A[i_i, j_i] -= phi_i[i] * grad_n_i[j] * h_e
-                # - <∇v·n, u>
-                A[i_i, j_i] -= grad_n_i[i] * phi_i[j] * h_e
-                # + <σv, u>
-                A[i_i, j_i] += sigma * phi_i[i] * phi_i[j] * h_e
-            
-            # RHS boundary terms
-            i_i = self.local_to_global(cell_i, i)
-            # - <∇v·n, g>
-            b[i_i] -= grad_n_i[i] * g_val * h_e
-            # + <σv, g>
-            b[i_i] += sigma * phi_i[i] * g_val * h_e
+                for j in range(self.n_dofs_per_cell):
+                    j_i = self.local_to_global(cell_i, j)
+                    A[i_i, j_i] += weight * (
+                        -phi_i[i] * grad_n_i[j]
+                        -grad_n_i[i] * phi_i[j]
+                        +sigma * phi_i[i] * phi_i[j]
+                    )
+                b[i_i] += weight * (-grad_n_i[i] * g_val + sigma * phi_i[i] * g_val)
     
     def _assemble_neumann_face(self, A, b, edge_id, cell_i, h_e, edge_mid, bc):
         """Assemble Neumann boundary face terms"""
-        phi_i = self.evaluate_basis(cell_i, edge_mid, derivatives=False)
-        g_val = bc.evaluate(edge_mid[0], edge_mid[1])
-        
-        # Neumann BC: ∇u·n = g
-        # Weak form: -∫ v * g ds
-        for i in range(self.n_dofs_per_cell):
-            i_i = self.local_to_global(cell_i, i)
-            b[i_i] += phi_i[i] * g_val * h_e
+        for point, weight in self._face_quadrature(edge_id, h_e, edge_mid):
+            phi_i = self.evaluate_basis(cell_i, point, derivatives=False)
+            g_val = bc.evaluate(*point)
+            for i in range(self.n_dofs_per_cell):
+                i_i = self.local_to_global(cell_i, i)
+                b[i_i] += phi_i[i] * g_val * weight
     
     def solve(self, f_func):
         """Solve the Poisson problem with BC from bc_manager"""
